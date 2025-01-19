@@ -26,7 +26,6 @@ Docker is a platform that enables developers to build, ship, and run application
 
 ### Task 1
 - Create Docker architecture and workflow diagrams.
-- Write a blog post about your learnings.
 
 ## Day 2: Dockerize an Application
 
