@@ -1,0 +1,56 @@
+# Basic StatefulSet Example with Headless Service
+# This creates a simple StatefulSet with 3 replicas of nginx and persistent storage
+
+# First, create a headless service to provide network identity for the pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-headless
+  labels:
+    app: nginx
+spec:
+  ports:
+  - port: 80
+    name: web
+  clusterIP: None               # This makes it a headless service
+  selector:
+    app: nginx                  # Must match pod labels in StatefulSet
+
+---
+# Then, create the StatefulSet itself
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+  labels:
+    app: nginx
+    tier: frontend
+spec:
+  serviceName: "nginx-headless"  # Must match the headless service name
+  replicas: 3                    # Number of identical pods to run
+  selector:
+    matchLabels:
+      app: nginx
+  template:                      # Pod template
+    metadata:
+      labels:
+        app: nginx               # Must match selector and service selector
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: www              # Mount name must match volume claim template name
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:          # PVCs created automatically for each pod
+  - metadata:
+      name: www                  # Will create PVCs named www-web-0, www-web-1, etc.
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "standard"
+      resources:
+        requests:
+          storage: 1Gi 

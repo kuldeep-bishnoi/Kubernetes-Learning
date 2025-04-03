@@ -1,0 +1,190 @@
+# This file contains examples of ExternalName services in Kubernetes
+
+# Example 1: Basic ExternalName Service
+# This maps an in-cluster service name to an external DNS name
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-database
+  labels:
+    app: database
+    type: external
+spec:
+  type: ExternalName              # Specify the service type as ExternalName
+  externalName: db.example.com    # The external DNS name to map to
+---
+# Example 2: ExternalName with Namespace Context
+# This shows how to use namespaces for environment-specific services
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-gateway
+  namespace: development          # This service is in the development namespace
+  annotations:
+    description: "Maps to sandbox environment for the payment provider"
+spec:
+  type: ExternalName
+  externalName: sandbox.payment-provider.com
+---
+# Same service name but in production namespace pointing to production endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-gateway
+  namespace: production           # This service is in the production namespace
+  annotations:
+    description: "Maps to production environment for the payment provider"
+spec:
+  type: ExternalName
+  externalName: api.payment-provider.com
+---
+# Example 3: ExternalName for Cross-Namespace Service Alias
+# Creates an alias of a service in another namespace
+apiVersion: v1
+kind: Service
+metadata:
+  name: shared-cache
+  namespace: team-a
+  annotations:
+    description: "Alias to the redis service in the shared-services namespace"
+spec:
+  type: ExternalName
+  # References another Kubernetes service in a different namespace
+  externalName: redis.shared-services.svc.cluster.local
+---
+# Example 4: ExternalName for Cloud Provider Managed Service
+# Points to a managed cloud database service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-db
+  annotations:
+    description: "Maps to managed PostgreSQL in Azure"
+spec:
+  type: ExternalName
+  externalName: mydb.postgres.database.azure.com
+  # Port information is ignored by Kubernetes but useful for documentation
+  ports:
+  - port: 5432
+    name: postgresql
+---
+# Example 5: ExternalName for Migration Strategy
+# Used during migration from legacy systems to Kubernetes
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-auth
+  annotations:
+    description: "Points to legacy authentication service during migration"
+    migration-status: "in-progress"
+    migration-target-date: "2023-12-31"
+spec:
+  type: ExternalName
+  externalName: auth.legacy-datacenter.company.com
+---
+# Example 6: ExternalName for External API
+# Points to external third-party API
+apiVersion: v1
+kind: Service
+metadata:
+  name: weather-api
+  annotations:
+    description: "Maps to external weather data service"
+spec:
+  type: ExternalName
+  externalName: api.weatherdata.com
+  ports:
+  - port: 443
+    name: https
+    # Note: Port information is for documentation only and is ignored
+    # ExternalName services don't support port remapping
+---
+# Example 7: ExternalName for HTTPS Endpoint
+# For services that require HTTPS connections
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-api
+  annotations:
+    description: "External HTTPS API"
+    security: "TLS required by clients"
+spec:
+  type: ExternalName
+  externalName: secure-api.partner.com
+  ports:
+  - port: 443
+    name: https
+---
+# Example 8: ExternalName for Multi-Region Strategy
+# Different services based on region
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdn-endpoint
+  namespace: us-east
+spec:
+  type: ExternalName
+  externalName: us-east.cdn-provider.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdn-endpoint
+  namespace: eu-west
+spec:
+  type: ExternalName
+  externalName: eu-west.cdn-provider.com
+---
+# Example 9: ExternalName for Feature Toggling
+# Can be updated to switch between implementations
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-engine
+  annotations:
+    description: "Currently using the legacy recommendation engine"
+    feature-toggle: "legacy"
+spec:
+  type: ExternalName
+  externalName: legacy-recommendations.example.com
+  # To toggle to new implementation, update externalName to:
+  # externalName: new-recommendations.example.com
+---
+# Example 10: Complete Application Example using ExternalName
+# A deployment that connects to an external service via ExternalName
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-redis
+  labels:
+    app: redis
+spec:
+  type: ExternalName
+  externalName: redis.external-cache.com
+---
+# Deployment that uses the ExternalName service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-application
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web-app
+        image: my-web-app:1.0
+        env:
+        - name: REDIS_HOST
+          # Use the in-cluster service name which gets resolved to external DNS
+          value: external-redis
+        - name: REDIS_PORT
+          value: "6379" 

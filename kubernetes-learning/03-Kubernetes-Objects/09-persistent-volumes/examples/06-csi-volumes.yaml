@@ -1,0 +1,301 @@
+# This example demonstrates CSI (Container Storage Interface) volume provisioning 
+# CSI enables Kubernetes to use storage systems from different vendors
+# through a standardized interface
+
+---
+# CSI StorageClass for AWS EBS
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-sc
+provisioner: ebs.csi.aws.com  # AWS EBS CSI driver
+parameters:
+  type: gp3  # EBS volume type
+  # Additional parameters for fine-tuning EBS volumes
+  iopsPerGB: "10"
+  throughput: "125" 
+  encrypted: "true"
+  kmsKeyId: "arn:aws:kms:us-west-2:123456789012:key/abc-def-ghi"  # Optional KMS key for encryption
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer  # Only provision volume when pod is created
+
+---
+# CSI StorageClass for Azure Disk
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-disk-sc
+provisioner: disk.csi.azure.com  # Azure Disk CSI driver
+parameters:
+  skuName: Premium_LRS  # Premium SSD
+  kind: managed
+  cachingMode: ReadOnly
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# CSI StorageClass for GCE PD
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gce-pd-sc
+provisioner: pd.csi.storage.gke.io  # GCE PD CSI driver
+parameters:
+  type: pd-ssd
+  replication-type: none
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+
+---
+# Rook-Ceph CSI StorageClass for on-premise clusters
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: rook-ceph-block
+provisioner: rook-ceph.rbd.csi.ceph.com  # Rook-Ceph CSI driver
+parameters:
+  # Ceph pool name
+  pool: replicapool
+  # The type of Ceph client to use
+  clusterID: rook-ceph
+  # Ceph file system name
+  fsName: myfs
+  # Root path in the filesystem
+  rootPath: /
+  # User credentials stored in a Kubernetes Secret 
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-rbd-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-rbd-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+
+---
+# PVC using AWS EBS CSI driver
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# StatefulSet using the AWS EBS CSI volumes
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: csi-app
+  labels:
+    app: csi-app
+spec:
+  serviceName: csi-app
+  replicas: 3
+  selector:
+    matchLabels:
+      app: csi-app
+  template:
+    metadata:
+      labels:
+        app: csi-app
+    spec:
+      # Optional: Use a specific node with required CSI driver
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: web
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+        # Expose volume metrics
+        - name: podinfo
+          mountPath: /etc/podinfo
+      # Use a init container to populate some test data
+      initContainers:
+      - name: init-data
+        image: busybox
+        command: ['sh', '-c', 'echo "Hello from a CSI provisioned volume!" > /data/index.html']
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: podinfo
+        downwardAPI:
+          items:
+            - path: "labels"
+              fieldRef:
+                fieldPath: metadata.labels
+            - path: "annotations"
+              fieldRef:
+                fieldPath: metadata.annotations
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: ebs-sc
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Service for the StatefulSet 
+apiVersion: v1
+kind: Service
+metadata:
+  name: csi-app
+  labels:
+    app: csi-app
+spec:
+  ports:
+  - port: 80
+    name: web
+  clusterIP: None  # Headless service
+  selector:
+    app: csi-app
+
+---
+# Example of CSI volume snapshot features
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: ebs-snapshot-class
+driver: ebs.csi.aws.com  # Must match the CSI driver name
+deletionPolicy: Delete
+
+---
+# Create a volume snapshot
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot 
+metadata:
+  name: ebs-volume-snapshot
+spec:
+  volumeSnapshotClassName: ebs-snapshot-class
+  source:
+    persistentVolumeClaimName: ebs-claim
+
+---
+# Create a PVC from the volume snapshot
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ebs-claim-from-snapshot
+spec:
+  dataSource:
+    name: ebs-volume-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Deployment using the restored snapshot
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restored-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restored-app
+  template:
+    metadata:
+      labels:
+        app: restored-app
+    spec:
+      containers:
+      - name: web
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: restored-data
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: restored-data
+        persistentVolumeClaim:
+          claimName: ebs-claim-from-snapshot
+
+---
+# Ephemeral inline CSI volumes example
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inline-csi-pod
+spec:
+  containers:
+  - name: web
+    image: nginx:stable
+    volumeMounts:
+    - name: my-csi-volume
+      mountPath: /data
+  volumes:
+  - name: my-csi-volume
+    csi:
+      driver: ebs.csi.aws.com
+      volumeAttributes:
+        size: "5Gi"
+        type: gp3
+      # For ephemeral volumes that don't need to survive pod deletion
+      # No need for a separate PVC
+      fsType: ext4
+      readOnly: false
+
+---
+# Example with Raw Block Volume
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: raw-block-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block  # Important: this is a raw block device, not a filesystem
+  storageClassName: ebs-sc
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Pod that uses a raw block device
+apiVersion: v1
+kind: Pod
+metadata:
+  name: raw-block-pod
+spec:
+  containers:
+  - name: block-app
+    image: debian:bullseye-slim
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+        while true; do
+          # Direct access to the block device
+          dd if=/dev/xvda of=/dev/null bs=1M count=100
+          sleep 5
+        done
+    volumeDevices:  # Note: volumeDevices instead of volumeMounts
+    - name: data
+      devicePath: /dev/xvda  # Device path inside container
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: raw-block-pvc 

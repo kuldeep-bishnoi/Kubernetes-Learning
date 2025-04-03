@@ -1,0 +1,46 @@
+# Basic Deployment Example
+# This demonstrates a simple deployment for a web application
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment  # Name of the deployment
+  labels:
+    app: nginx           # Labels for the deployment itself
+    tier: frontend
+spec:
+  replicas: 3            # Number of pod replicas to run
+  selector:
+    matchLabels:
+      app: nginx         # Selector to match pods this deployment manages
+  template:              # Pod template - defines what each pod will look like
+    metadata:
+      labels:
+        app: nginx       # Labels applied to the pods (must match selector above)
+        environment: production
+    spec:
+      containers:
+      - name: nginx      # Container name
+        image: nginx:1.20.1  # Container image to run
+        ports:
+        - containerPort: 80  # Port the container listens on
+          name: http
+        resources:       # Resource constraints for the container
+          limits:
+            cpu: 500m    # Maximum CPU allocation (500 millicores = 0.5 CPU)
+            memory: 256Mi  # Maximum memory allocation (256 megabytes)
+          requests:
+            cpu: 100m    # Requested CPU allocation (100 millicores = 0.1 CPU)
+            memory: 128Mi  # Requested memory allocation (128 megabytes)
+        livenessProbe:   # Check if the container is alive
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30  # Wait 30 seconds before first probe
+          periodSeconds: 10        # Check every 10 seconds
+        readinessProbe:  # Check if the container is ready to serve traffic
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5   # Wait 5 seconds before first probe
+          periodSeconds: 5         # Check every 5 seconds 

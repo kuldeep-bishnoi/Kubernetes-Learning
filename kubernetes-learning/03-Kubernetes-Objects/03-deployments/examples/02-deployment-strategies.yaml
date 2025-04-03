@@ -1,0 +1,168 @@
+# Deployment Update Strategies
+# This file demonstrates different update strategies for deployments
+
+# Example 1: RollingUpdate Strategy (Default)
+# Gradually replaces old pods with new ones for zero-downtime updates
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rolling-update-deployment
+  labels:
+    app: web
+    strategy: rolling
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: web
+      strategy: rolling
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1         # Maximum number of pods that can be created over desired number
+      maxUnavailable: 1   # Maximum number of pods that can be unavailable during update
+  template:
+    metadata:
+      labels:
+        app: web
+        strategy: rolling
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.20.0
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Example 2: Recreate Strategy
+# Terminates all existing pods before creating new ones (causes downtime)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recreate-deployment
+  labels:
+    app: web
+    strategy: recreate
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+      strategy: recreate
+  strategy:
+    type: Recreate    # All old pods are killed before new ones are created
+  template:
+    metadata:
+      labels:
+        app: web
+        strategy: recreate
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.20.0
+        ports:
+        - containerPort: 80
+
+---
+# Example 3: Conservative RollingUpdate
+# Ensures that almost all pods are available during updates, good for critical services
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conservative-update-deployment
+  labels:
+    app: web
+    strategy: conservative
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: web
+      strategy: conservative
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1         # Only create 1 extra pod
+      maxUnavailable: 0   # Don't allow any pod to be unavailable (zero downtime)
+  template:
+    metadata:
+      labels:
+        app: web
+        strategy: conservative
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.20.0
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          successThreshold: 2  # Must succeed twice to be considered ready
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# Example 4: Slow RollingUpdate with PodDisruptionBudget
+# Updates slowly with guarantees about minimum available pods
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-pdb
+spec:
+  minAvailable: 4  # Keep at least 4 pods available during voluntary disruptions
+  selector:
+    matchLabels:
+      app: web
+      strategy: slow
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slow-update-deployment
+  labels:
+    app: web
+    strategy: slow
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: web
+      strategy: slow
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1         # Only create 1 extra pod
+      maxUnavailable: 1   # Only allow 1 pod to be unavailable
+  minReadySeconds: 30     # Pod must be ready for 30 seconds before considered available
+  template:
+    metadata:
+      labels:
+        app: web
+        strategy: slow
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.20.0
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10 

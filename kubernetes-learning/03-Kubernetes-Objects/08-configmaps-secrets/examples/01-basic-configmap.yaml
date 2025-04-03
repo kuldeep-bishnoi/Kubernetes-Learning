@@ -1,0 +1,74 @@
+# Basic ConfigMap with different types of configuration data
+# Shows key-value pairs, multi-line properties, and structured data
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  labels:
+    app: my-application
+    environment: development
+data:
+  # Simple key-value configuration
+  APP_ENV: development
+  APP_DEBUG: "true"
+  LOG_LEVEL: debug
+  CACHE_ENABLED: "false"
+  MAX_CONNECTIONS: "100"
+  
+  # Multi-line text configuration (properties file)
+  application.properties: |
+    # Application properties
+    app.name=My Application
+    app.description=Sample application demonstrating ConfigMaps
+    app.version=1.0.0
+    
+    # Database connection
+    db.host=postgres-service
+    db.port=5432
+    db.name=app_database
+    
+    # Cache settings
+    cache.ttl=300
+    cache.max-entries=1000
+    
+    # Other settings
+    thread.pool.size=10
+    timeout.seconds=30
+  
+  # YAML configuration
+  config.yaml: |
+    server:
+      port: 8080
+      compression:
+        enabled: true
+        min-response-size: 2048
+      
+    logging:
+      level:
+        root: INFO
+        com.example: DEBUG
+      
+    metrics:
+      enabled: true
+      export:
+        prometheus:
+          enabled: true
+  
+  # JSON configuration
+  config.json: |
+    {
+      "features": {
+        "authentication": true,
+        "authorization": true,
+        "rateLimit": {
+          "enabled": true,
+          "limit": 100,
+          "period": "minute"
+        }
+      },
+      "notifications": {
+        "email": true,
+        "slack": false,
+        "webhooks": ["http://monitoring-service/alerts"]
+      }
+    } 

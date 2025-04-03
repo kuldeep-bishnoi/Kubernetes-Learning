@@ -1,0 +1,238 @@
+# This file contains examples of Headless Services in Kubernetes
+
+# Example 1: Basic Headless Service
+# This creates a simple headless service that returns all Pod IPs directly
+apiVersion: v1
+kind: Service
+metadata:
+  name: basic-headless
+  labels:
+    app: web
+spec:
+  clusterIP: None         # This makes the service headless
+  selector:
+    app: web              # Selects pods with label app=web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+---
+# Example 2: Headless Service with StatefulSet
+# The most common use case for headless services
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  labels:
+    app: database
+spec:
+  clusterIP: None
+  selector:
+    app: database
+  ports:
+  - port: 3306
+    name: mysql
+---
+# StatefulSet that uses the headless service
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: database
+spec:
+  serviceName: database   # References the headless service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: database
+  template:
+    metadata:
+      labels:
+        app: database
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:5.7
+        ports:
+        - containerPort: 3306
+          name: mysql
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "example-password"
+---
+# Example 3: Headless Service for a Distributed Database
+# For databases like Cassandra where direct Pod-to-Pod communication is needed
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra
+  labels:
+    app: cassandra
+spec:
+  clusterIP: None
+  selector:
+    app: cassandra
+  ports:
+  - port: 9042
+    name: cql           # Client Quorum protocol
+  - port: 7000
+    name: intra-node    # Intra-node communication
+  - port: 7001
+    name: tls-intra-node  # TLS intra-node communication
+  - port: 7199
+    name: jmx           # JMX monitoring
+---
+# Example 4: Headless Service Without Selectors
+# Manually define the endpoints for external systems
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-db
+spec:
+  clusterIP: None
+  ports:
+  - port: 5432
+    name: postgresql
+---
+# The corresponding Endpoints resource
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: external-db    # Must match the service name
+subsets:
+- addresses:
+  - ip: 192.168.1.100  # External IP 1
+  - ip: 192.168.1.101  # External IP 2
+  ports:
+  - port: 5432
+    name: postgresql
+---
+# Example 5: Headless Service with PublishNotReadyAddresses
+# Include all Pods in DNS responses, even those that aren't ready
+apiVersion: v1
+kind: Service
+metadata:
+  name: discovery-service
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true  # Include Pods that aren't Ready
+  selector:
+    app: cluster-app
+  ports:
+  - port: 8080
+    name: api
+---
+# Example 6: Headless Service with Combined ExternalName
+# Points to external DNS name without allocating ClusterIP
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-service
+spec:
+  clusterIP: None
+  type: ExternalName
+  externalName: database.example.com
+  ports:
+  - port: 5432
+---
+# Example 7: Headless Service for Kafka Message Broker
+# Each Kafka broker needs a stable identity and direct communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-headless
+  labels:
+    app: kafka
+spec:
+  clusterIP: None
+  selector:
+    app: kafka
+  ports:
+  - port: 9092
+    name: kafka-port
+---
+# Example 8: Complete Application Example - StatefulSet with Headless Service
+# A full example of Elasticsearch cluster with headless service
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  labels:
+    app: elasticsearch
+spec:
+  clusterIP: None
+  selector:
+    app: elasticsearch
+  ports:
+  - port: 9200
+    name: rest
+  - port: 9300
+    name: inter-node
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+spec:
+  serviceName: elasticsearch
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.14.0
+        ports:
+        - containerPort: 9200
+          name: rest
+        - containerPort: 9300
+          name: inter-node
+        env:
+        - name: cluster.name
+          value: k8s-logs
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: discovery.seed_hosts
+          value: "elasticsearch-0.elasticsearch,elasticsearch-1.elasticsearch,elasticsearch-2.elasticsearch"
+        - name: cluster.initial_master_nodes
+          value: "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+        - name: ES_JAVA_OPTS
+          value: "-Xms512m -Xmx512m"
+---
+# Example 9: Headless Service with Custom Annotations
+# Uses annotations to customize DNS behavior
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-dns-headless
+  annotations:
+    service.alpha.kubernetes.io/tolerate-unready-endpoints: "true"  # Legacy version of publishNotReadyAddresses
+spec:
+  clusterIP: None
+  selector:
+    app: custom-app
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 10: Headless Service for Redis Sentinel
+# Redis Sentinel requires knowing the exact IPs of nodes
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  labels:
+    app: redis-sentinel
+spec:
+  clusterIP: None
+  selector:
+    app: redis-sentinel
+  ports:
+  - port: 26379
+    name: sentinel 

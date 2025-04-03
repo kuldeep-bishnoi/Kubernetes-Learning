@@ -1,0 +1,206 @@
+# This example demonstrates Volume Snapshots for backing up and restoring persistent volumes
+# Note: VolumeSnapshots require the VolumeSnapshot CRD to be installed in the cluster
+# and your storage class must support snapshots
+
+---
+# First, define a VolumeSnapshotClass that determines how snapshots are created
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: csi-snapclass
+driver: ebs.csi.aws.com  # Change this to your CSI driver
+deletionPolicy: Retain   # Keep snapshots even when VolumeSnapshot is deleted
+
+---
+# Create a StorageClass for our PVCs
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: snapshot-ready-storage
+provisioner: ebs.csi.aws.com  # Change this to your CSI driver
+parameters:
+  type: gp3
+allowVolumeExpansion: true
+
+---
+# Create a PVC for a database
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: database-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: snapshot-ready-storage
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Deploy the database
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-deployment
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:14
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "securepassword"  # Use a Secret in production
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: database-data
+
+---
+# After the database runs for a while and contains data,
+# create a snapshot of the PVC
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: postgres-snapshot-1
+spec:
+  volumeSnapshotClassName: csi-snapclass
+  source:
+    persistentVolumeClaimName: database-data
+
+---
+# Later, we can restore from this snapshot to a new PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: database-data-restored
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: snapshot-ready-storage
+  resources:
+    requests:
+      storage: 10Gi
+  dataSource:
+    name: postgres-snapshot-1
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+
+---
+# Deploy a new postgres instance using the restored PVC
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-restored
+  labels:
+    app: postgres-restored
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-restored
+  template:
+    metadata:
+      labels:
+        app: postgres-restored
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:14
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "securepassword"  # Use a Secret in production
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: database-data-restored
+
+---
+# Example to schedule backups with a CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup
+spec:
+  schedule: "0 1 * * *"  # Every day at 1am
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: volume-snapshot-admin  # Needs permissions for snapshots
+          containers:
+          - name: backup-job
+            image: bitnami/kubectl:latest
+            command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              # Create a snapshot with timestamp
+              TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+              cat <<EOF | kubectl apply -f -
+              apiVersion: snapshot.storage.k8s.io/v1
+              kind: VolumeSnapshot
+              metadata:
+                name: postgres-snapshot-${TIMESTAMP}
+              spec:
+                volumeSnapshotClassName: csi-snapclass
+                source:
+                  persistentVolumeClaimName: database-data
+              EOF
+              
+              # Optional: Clean up old snapshots (keep last 7)
+              kubectl get volumesnapshot -l app=postgres-backup -o json | \
+                jq -r '.items | sort_by(.metadata.creationTimestamp) | .[:-7] | .[].metadata.name' | \
+                xargs -r kubectl delete volumesnapshot
+          restartPolicy: OnFailure
+
+---
+# RBAC for the backup job
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: volume-snapshot-admin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: volume-snapshot-role
+rules:
+- apiGroups: ["snapshot.storage.k8s.io"]
+  resources: ["volumesnapshots"]
+  verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: volume-snapshot-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: volume-snapshot-role
+subjects:
+- kind: ServiceAccount
+  name: volume-snapshot-admin 

@@ -1,0 +1,165 @@
+# Basic CPU-based Horizontal Pod Autoscaler Example
+# This example demonstrates a simple HPA that scales based on CPU utilization
+
+---
+# First, we need a namespace for our resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hpa-demo
+
+---
+# ConfigMap for our application
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cpu-demo-config
+  namespace: hpa-demo
+data:
+  index.php: |
+    <?php
+      $x = 0.0001;
+      for ($i = 0; $i <= 1000000; $i++) {
+        $x += sqrt($x);
+      }
+      echo "CPU load test completed. Host: " . gethostname() . "\n";
+    ?>
+
+---
+# Deployment running a simple PHP application that can generate CPU load
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-apache
+  namespace: hpa-demo
+spec:
+  selector:
+    matchLabels:
+      app: php-apache
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: php-apache
+    spec:
+      containers:
+      - name: php-apache
+        image: php:7.4-apache
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 200m  # Request 200 millicores (0.2 CPU cores)
+            memory: 256Mi
+          limits:
+            cpu: 500m  # Limit to 500 millicores (0.5 CPU cores)
+            memory: 512Mi
+        volumeMounts:
+        - name: php-code
+          mountPath: /var/www/html
+      volumes:
+      - name: php-code
+        configMap:
+          name: cpu-demo-config
+          items:
+          - key: index.php
+            path: index.php
+
+---
+# Service to expose the PHP Apache deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: php-apache
+  namespace: hpa-demo
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: php-apache
+  type: ClusterIP
+
+---
+# Horizontal Pod Autoscaler for CPU-based scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: php-apache
+  namespace: hpa-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-apache
+  minReplicas: 1   # Minimum number of replicas
+  maxReplicas: 10  # Maximum number of replicas
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50  # Target 50% CPU utilization
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0     # Scale up immediately when needed
+      policies:
+      - type: Percent
+        value: 100                       # Double the number of replicas
+        periodSeconds: 15                # Every 15 seconds
+    scaleDown:
+      stabilizationWindowSeconds: 300    # Wait 5 minutes before scaling down
+      policies:
+      - type: Percent
+        value: 100                       # Scale down all unnecessary pods
+        periodSeconds: 15                # Every 15 seconds
+
+---
+# Load Generator Job (optional - for testing the HPA)
+# Uncomment this section to generate load on the PHP Apache service
+# apiVersion: batch/v1
+# kind: Job
+# metadata:
+#   name: load-generator
+#   namespace: hpa-demo
+# spec:
+#   template:
+#     metadata:
+#       name: load-generator
+#     spec:
+#       containers:
+#       - name: busybox
+#         image: busybox
+#         command: ["/bin/sh", "-c", "while true; do wget -q -O- http://php-apache; done"]
+#       restartPolicy: Never
+#   backoffLimit: 4
+
+---
+# Instructions for testing:
+#
+# 1. Apply this manifest to create the deployment and HPA:
+#    kubectl apply -f 01-basic-cpu-hpa.yaml
+#
+# 2. Watch the HPA status:
+#    kubectl -n hpa-demo get hpa php-apache -w
+#
+# 3. Generate load (choose one method):
+#    a. Uncomment and apply the load-generator Job in this file, or
+#    b. Run a load generator in a separate pod:
+#       kubectl -n hpa-demo run -i --tty load-generator --image=busybox /bin/sh
+#       # Inside the pod run:
+#       while true; do wget -q -O- http://php-apache; done
+#
+# 4. Observe how the HPA scales the deployment:
+#    kubectl -n hpa-demo get deployment php-apache
+#
+# 5. Check individual pod CPU usage:
+#    kubectl -n hpa-demo top pods
+#
+# 6. To stop the load test, delete the load generator:
+#    kubectl -n hpa-demo delete job load-generator
+#    # Or if using option b, press Ctrl+C in the pod shell and exit
+#
+# 7. Watch the deployment scale back down after load decreases:
+#    kubectl -n hpa-demo get deployment php-apache -w 

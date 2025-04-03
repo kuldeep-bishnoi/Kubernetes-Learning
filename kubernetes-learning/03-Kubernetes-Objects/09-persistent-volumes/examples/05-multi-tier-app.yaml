@@ -1,0 +1,343 @@
+# This example demonstrates a multi-tier application with different volume types
+# Frontend (web server), Application server, and Database tiers
+
+---
+# Storage Class for the database tier (high performance)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: high-performance
+provisioner: kubernetes.io/gce-pd  # Change to your cloud provider
+parameters:
+  type: pd-ssd
+  fstype: ext4
+  replication-type: none
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+
+---
+# Storage Class for application tier (standard)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard-performance
+provisioner: kubernetes.io/gce-pd  # Change to your cloud provider
+parameters:
+  type: pd-standard
+  fstype: ext4
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+
+---
+# ConfigMap for shared configurations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  app.properties: |
+    app.name=multi-tier-example
+    app.version=1.0.0
+    db.host=postgres-service
+    db.port=5432
+    app.log.level=INFO
+
+---
+# Database PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: high-performance
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+# Application tier PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard-performance
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Shared cache PVC - uses ReadWriteMany for sharing across replicas
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-cache
+spec:
+  accessModes:
+    - ReadWriteMany  # Note: Requires a storage class that supports this access mode (like NFS)
+  storageClassName: nfs-storage  # You need to have this StorageClass configured
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Database Deployment
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:14
+        env:
+        - name: POSTGRES_DB
+          value: app_database
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: username
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-data
+
+---
+# Service for Database
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+  clusterIP: None  # Headless service for StatefulSet
+
+---
+# Application Tier Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app-server
+  template:
+    metadata:
+      labels:
+        app: app-server
+    spec:
+      containers:
+      - name: app-server
+        image: app-server:1.0  # Replace with your application image
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_DATASOURCE_URL
+          value: jdbc:postgresql://postgres-service:5432/app_database
+        - name: SPRING_DATASOURCE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: username
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+        volumeMounts:
+        - name: app-data
+          mountPath: /app/data
+        - name: shared-cache
+          mountPath: /app/cache
+        - name: config-volume
+          mountPath: /app/config
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+      volumes:
+      - name: app-data
+        persistentVolumeClaim:
+          claimName: app-data
+      - name: shared-cache
+        persistentVolumeClaim:
+          claimName: shared-cache
+      - name: config-volume
+        configMap:
+          name: app-config
+
+---
+# Service for Application
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+spec:
+  selector:
+    app: app-server
+  ports:
+  - port: 80
+    targetPort: 8080
+
+---
+# Frontend Deployment with emptyDir for temporary storage
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: static-content
+          mountPath: /usr/share/nginx/html
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      # Init container to pull static content from application server
+      initContainers:
+      - name: content-init
+        image: busybox
+        command: ['sh', '-c', 'wget -O- http://app-service/static | tar xvz -C /static-content']
+        volumeMounts:
+        - name: static-content
+          mountPath: /static-content
+      volumes:
+      - name: static-content
+        emptyDir: {}  # Ephemeral storage that's empty when Pod starts
+      - name: nginx-cache
+        emptyDir: {}  # Ephemeral cache that's empty when Pod starts
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+
+---
+# ConfigMap for Nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+data:
+  default.conf: |
+    server {
+      listen 80;
+      
+      location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+      }
+      
+      location /api/ {
+        proxy_pass http://app-service/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer  # Exposes the service externally
+
+---
+# Secret for database credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: Opaque
+stringData:
+  username: app_user
+  password: change_me_in_production  # Use proper secret management in production 

@@ -1,0 +1,70 @@
+# A parallel job for processing data with multiple workers
+# This demonstrates running multiple pods in parallel to process work faster
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-processor
+  labels:
+    app: analytics
+    type: batch-process
+spec:
+  # Require 10 successful pod completions
+  completions: 10
+  
+  # Run 3 pods at a time in parallel
+  parallelism: 3
+  
+  # Retry failed pods up to 6 times
+  backoffLimit: 6
+  
+  # Time-to-live after completion (delete after 1 hour)
+  ttlSecondsAfterFinished: 3600
+  
+  # Pod template
+  template:
+    metadata:
+      labels:
+        app: analytics
+    spec:
+      containers:
+      - name: data-processor
+        image: my-data-processor:latest # You would replace this with your actual image
+        command: ["/bin/sh"]
+        args: 
+        - "-c"
+        - "echo Processing data chunk $RANDOM; sleep 5; echo Processing complete"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        env:
+        - name: BATCH_SIZE
+          value: "100"
+        - name: LOG_LEVEL
+          value: "info"
+      
+      # Use OnFailure for retry logic
+      restartPolicy: OnFailure
+      
+      # Define node affinity to run on nodes with specific labels
+      # This helps ensure jobs run on appropriate nodes
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 10
+            preference:
+              matchExpressions:
+              - key: job-workload
+                operator: In
+                values:
+                - "true"
+                
+      # Add a toleration to allow scheduling on nodes with high CPU
+      tolerations:
+      - key: "high-cpu-usage"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule" 

@@ -1,0 +1,372 @@
+# This example demonstrates secure Ingress configurations in Kubernetes
+# It covers TLS, authentication, authorization, and other security features
+
+---
+# Create a namespace for this example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-ingress-demo
+  labels:
+    purpose: security-example
+
+---
+# 1. Sample application deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: secure-ingress-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web-app
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: content
+        configMap:
+          name: web-content
+
+---
+# Service for the web application
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app
+  namespace: secure-ingress-demo
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# ConfigMap for sample content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-content
+  namespace: secure-ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Secure Ingress Demo</title>
+    </head>
+    <body>
+      <h1>Secure Ingress Demo</h1>
+      <p>This page is being served through a secure ingress.</p>
+    </body>
+    </html>
+
+---
+# 2. TLS Certificate Secret
+# In production, you would use cert-manager or similar to manage certificates
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret
+  namespace: secure-ingress-demo
+type: kubernetes.io/tls
+data:
+  # These are placeholder values, not real certificates
+  # In production, replace with actual certificates
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUZoekNDQkcrZ0F3SUJBZ0lVTHFXZDVnZDZZdEdpSUYyVExKYU5aaHYrNmg4d0RRWUpLb1pJaHZjTkFRRUwKQlFBd1R6RUxNQWtHQTFVRUJoTUNWVk14RHpBTkJnTlZCQWdNQmsxaGNtbHNZVEVQTUEwR0ExVUVCd3dHVFdGeQphV3hoTVEwd0N3WURWUVFLREFSbGJtUmpNU1V3SXdZRFZRUUREQnhzYjJOaGJHaHZjM1F1WlhoaGJYQnNaUzVqCmIyMHVhMmRwYmdzd0lCY05NakF4TVRBMk1UWXlOakF3V2hnUE1qRXhPVEV4TVRFeE56STJNREJhTUU4eEN6QUoKQmdOVkJBWVRBbFZUTVE4d0RRWURWUVFJREFaTllYSnBiR0V4RHpBTkJnTlZCQWNNQmsxaGNtbHNZVEVOTUFzRwpBMVVFQ2d3RVpXNWtZekVsTUNNR0ExVUVBd3djYkc5allXeG9iM04wTG1WNFlXMXdiR1V1WTI5dExtdG5hVzRMCk1JSUNJakFOQmdrcWhraUc5dzBCQVFFRkFBT0NBZzhBTUlJQ0NnS0NBZ0VBN2F3c2tBODlPQUZGNHV5Q0lRa3UKL0J5WU9BYkJ5QUZzYUF6aFovWVR4aGtPcVFBcm5QRStEaW5XdTNBcWtValVDRTVNMCtNeTNIbW15ZnVYRzVwZgowa3l4WjRvRlNmRUVKd0F6eUZnb3VkOXljcGlicUZNbk5KRkhQOGRQZDdUL0NzMmZyMnZLZnM2NzVjVWV1YTFHClhjdDVBLytGRVFrUUpNL2JqV2dKRjYzek9FUkN5OG9lVEF1RGVZMkwreWNVWnVlZDUzVzRyaGE3azZPV1labnkKV2dZNW1Ld3d4eVJnZE1FWWxpYmFXRmFadS9XL2JLenQrTUwxaHEwcG1GRXBCQVRyRlV1RHhLT3F0N2Z2dDFqZAp2eE02YmxLWi9HSmhidFd1ZmVMSjJjZ0JMU09OVjNZd2RRYTBSOEFzYzN5VlpWN01DTm1SNTNheS9BUGh1RXZQCnNXZXZESVp6Z0I2blhoV2RtTVpnRWdmTDBzMVgyODhFR3VhUUYxdmtPZklhUmhVRGZBcGhVamlhQ2N4OE9vcncKRlRqOWZnS2NHbXcrdElneHhWaGVKeVp3VXFsMHJITzdZTUVXR0dFNHpnU3BTSVBsdE03bGMwTGw2QlNKcjRURwpmUm5SNXlvdXBXWVdQTUJuOXlNUnBEdjBtNldDaWxQaHI3bi91R2ExRVpxRVNSNjVZUy9yZXhaak9GTzk1OWg2CnN4bHczOGQrc2VHUlUrMHVpdXZZYWpzWnErNEdmK09uVzZXc3BWWnJadWE4bjB2eTZiRnlmU0UxMzVvWGJrQ04KQk9kVjMrQzVlVHdXTG9DeHpSb3RKZGpKcnl3VmdiTThyc1pMWUltanNzVkRWd1lhQnFja2QwU0ozYnRNZlJ5Ywp4c0dOQ3lIZlkxRFZuenYvbXRrQ0F3RUFBYU5UTUZFd0hRWURWUjBPQkJZRUZOaW1PSDIwbTFxdDRKWE1aVTJlCmV4UGI5UzBiTUI4R0ExVWRJd1FZTUJhQUZOaW1PSDIwbTFxdDRKWE1aVTJlZXhQYjlTMGJNQThHQTFVZEV3RUIKL3dRRk1BTUJBZjh3RFFZSktvWklodmNOQVFFTEJRQURnZ0lCQUZrWDZQRlB6UzVkeU9kUjZUL1QrdFZEUWgzYwpMMTZWWUFNUTBwY1g0WjFaYkdrWVZ5K0p5UzZHQTJPdE5XY3Q3VzhsNjh4WXAzWFdONVZFaE5wbzFSNGViWXN3CmNhMVNSTDZvQzRNd0UycHp2TE9aUzJtZ1V3d1phUVA1VXMwcGJFWXVYTEwxa1BBdFRQeHYwcldXemlWTTlWNm0KMmdKODlKdFJCL0ZJVGV6YVR1MnhnWnhwTnQrZDVOQWRpVVBpZndmaSt3dG5va3liTU1oU1o3WVRaMmNkTEVZYQpaTXYzRjlkWitPbFlLVHZtTUF2ZTk0YVpnMGh3cUI4OGcxa3I1VkJnZDJ1YmNxbi9yZGdYaGE0bkZTcUZVcTBvCjk2VHZ3SzRhb3U2YkFxY2JlN1YrV1J0c2ovL2JKdFFYNytrQXBhYm9KVmpnUTFxc0RrVkpVcGxKYlY5ZmhYc0kKTWo1MjUvM2VXamxqVE8vYkhxQWVsUE9XSXFPU3lteFlhZFZxdGl2N2JlV2E1UnJxUWlPZmdOOEd3RmxnV2h1NApESjg0bTk2dGlvVUc2NitJK2pUQkpQUVRQNHlMdERIUGJBam5rYjl0eUU2eWdjWUxXdERNTHJzNlZtd0JLNTBTCnpTdUhjb01MNkVoOWo4WlBNNkZKL3pvVmhtZ1hxbjR0bHlGV05xQ25SY2NZRkRSRnA0YjRZbDlpQnFOMExWT2EKTDFaeHJmQ084TitPUmVhcTdJdVNyRTh2WkMvR0pxOEpLVWVUTHlBL1BsZkNqQUFQVFY5TzBVb2g0eGwzeEpUQgpCNGFVaitCdkdYT3U1a1FJZ1FZU0FTdm0zdmI1V3BRVjRlODlhN1V5QXY0cld2QncrZEpJaGtRNUZYS0VmZ1lVClAvWWRaa0prZTdGWgotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0t
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUpRZ0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQ1N3d2dna29BZ0VBQW9JQ0FRRHRyQ3lRRHowNEFVWGkKN0lJaENTNzhISmc0QnNISUFXeG9ET0ZuOWhQR0dRNnBBQ3VjOFQ0T0tkYTdjQ3FTU05RSVR0VG8vbkxjZWFiSgo1OGNibWwvU1RMRm5pZ1ZKOFFRbkFEUElXQ2k1MzNKeW1KdW9VeWMwa1VjL3gwOTN0UDhLelo2dmE4cCt6cnZsCnhSNjVyVVpkeTNrRC80VVJDUkFrejl1TmFBa1hyZk00UkVMTHloNU1DKE41all2N0p4Um01NTNuZGJpdUZydVQKbzVaaG1mSmFCam1ZckRESEpHQjB3UmlXSnRwWVZwbTc5YjlzTE8zNHd2V0dyU21ZVVNrRUJPc1ZTNFBFbzZxMwp0KyszV04yL0V6cHVVcG44WW1GdTFhNTk0c25aeUFFdEk0MVhkakIxQnJSSHdDeHpmSlZsWHN3STJaSG5kckw4CkErRzRTOCt4WjY4TWhuT0FIcWRlRloyWXhtQVNCOHZTelZmYnp3UWE1cEFYVytRNThocEdGUU44Q21GU09Kb0oKekhsNnF2QVZPUDF1QXB3YWJEN1MyRlRYSEZxMThHY0ZLcGRLeHp1MlJaWVlvQkRPejRsZnFpWEZaL1BsSzRXUgpUc2I5R2RIbktpK2xaaFk4d0dmM0EweWtPL1NicGFLS1UrTzhGZlRidkIrc2hmZHhibXRsNXJ5ZlVLK0xGNDB6Ck91K2tzeHZJZnJGSjd0T05Ib3JyMkdvNw6hdnVCbi9qcDI5bHJLVm1hM2JtdkoYTDhtbXhjbjBoLU4rYUYyNUFqUQpUblZkL2d1WGs4Rmk2QXNjMGFMU1hZeWE4c0ZZR3pQSzdHUzJDSm83TEZRMWNHFGdhbkpIZEVpZDI3VkgwY25NYgpCllFc2gzMk5RMWQ4Ny81clpBZ01CQUFFS2dnSUJBTHYyYzR3bDdTWE10UXQxc1BZY0pjTTBTNHh1eHlhYlZxWApnRmFTQjAzTENhbzNqem1uVk5ycTMyZWxmMzNlVldCeDVrRnlvQ3Q4UHVldHJMRzF1MkxMS3AxZjA1VXY1a0MrCk9CVzQrUjhNZGdwTjl0VGVsYXhCV1Fsa1VoT1ltS0lRd2RJRWxIK25uMDcwRTQ3VXY0WVRIU2RSNmxua0orTE0KSW5OT2UwczdEK0FXdUhXeEIxL0hVSWsvdHRZeHNJV2l4WS9NMHc1NWNveEdCU3pQN1ByL0pQdGRGd1pvandsWQpBdDVvdWx5Rit1QmpRMXZDd0w2OXh4VjFUTDdzRjBLQnRzNmR1N2k0UEFrcDhFSUliWnMrdk14ejVVa0JMdU9kClRUTWlKKzVRbFh5MHptNFVzbTM3cnlqK2lGQ2w0SUxQNkVWZm43aENvSDQ2dHUwTDQ0ZEUyQmdVVXVkbDdmRkUKVFZhZWduRUFJRFZPNzdBSzBvVEdTbmQxNzlVU2U1OVI3dTl4eEMxMVZ3UkZ0a2xoMG1abVd5T0VXWU9VTzNIegpBYzlxMk8vcVdoM1N6VHdvVGJXYXhWM3Q5K0QzSnBVb0pmUEY1NytpTHlCR0FQOHdhbmhwSWRpa3RHWDcwNUx4CkNsU1g0RkRCakF1b2JpVXU1dWVueXZoL3grTDZMS2JUUm1DcjNRbmRxUC9RSEdqOXJ5QnA3N3QwL3VSSXY2Z00KanluejVuWTF5QlRBTGhHdnN2bEtoT0wxeFNvMFdOL3RKY3BxMFVCekd1RCs3U0FUK29FUUhWdzJZczdpRmFZKwo5cURucXNpdGZvU1M3eUxZdGk1TDJ0U2I5bGpMYVRhUHdCQmdhVzBuVitDdHV1dW1CRGE3ZHdhTHhqOXZ5WDVWCmZnZ0JBb0lCQVFEL1g1dGgrYnpGdU5YOU5JS0ZocUhTaGxIaU1hNHFTRkR0QTZDVmQwVnVWalJxcnBacnNaeE4KNXZER1RrWG1qb2NYMCsxRVNzUVhxL2d3UXBEak0zdzZZbFRobTh3K24yL1pyRFI5Y1h4M2MxcW0vWUFoMENJbQpoNFloYUE5eHpjSkJ2aWhCWHZJUXJEN3JSR0l3enhGN3ZnMitIOWdaeUltdndWd2VlSVJ2Tk4vTFFOeUNkSTFmCmJRYXdNQXhleFZ2dGhyYVgzMnhWOWRINERTRnhnQWdJcWdnSWFuWFBiTDJhdis0UXhLQ0NlYUx1YmhYRHlHZXcKN0VJYTQ3dDI5Y2JPMW9wdThweXdaUDlPTTNjL2tNNVVyaWNjMHY2Z0ErYkFvSjhnK05OY3dlUTZ2WGRVRStiSApyMm9sOVlHSlV0STZ5YVVVOWcybitJRm45eDNNUS8ySkFvSUJBUUR1RUExcDN6aC8reE4wTjQwRFVuZm1NS3hYCkFBRlJNQmlvMmEzblRsU3l6Uy95NnRqa2U0WHVHY0JTcGJqUGVCbnNlV3RRaDYzREVINXdqaHNHTlRZNnFIZEUKZ0d5ZnR1TzdhS1VqL0t2NVJ3S0ZNTU1BOHBFYThiRWUxMmhDNWZpeGlVcmJmQW1FMFRqbFBYNlVXL0hHUXhvNApvNGFnU0YzV1VBVVNYempQMmZtZVgwNUFFRmZWeS9hZ1lsQnVCbGpKS1dXMDZiVFdDbkYvbVVxUnl0OEp4K2xMCnFXSGVmcHZMVlJWcWRtdnFYaTBrYXNpZDNQREt5ZmZtejFNUmRUREZQWW9PekJtT0txRm9qdXEzdkJtdnc2OFYKWlZ2dENkRk45T2tDNWRKM29nK0tzQUtMZ1BPbGNJQTJ0R2ZXN3YxWHhxVzJCd1lsbjh2YWF0UXhBb0lCQVFEWgpEVitLbS9aczZ0UTI1VXdSOUorYlB4RityZks1OGdDcElOcW9YelRjclRLWUV6OU9ydm82dHRNRmpRSkZ4QUgvCnB0dEdSSVEzcnl5enpLbXRGMFc5OWVKTnJKUDk3dWwzWW9Ick80K0JnZkk3aHE1dDdLYjlRN3BtdEVCR3NGTVEKc3kvcFI2dVJEeTY3eDNFc2YrV3dQVmpFeVE3elBxYys2K0NEOFpDTE9yeG5KRmN3VTgycHlDeFdlSnBOU1dPYwppRVpWUno3U3NudHZ1ejdMQXJDNXliRjBjdEZBbnVBWGJHUDA5ekd3U1FLbXBXaUpzOHNEbzFEL0tVZUJTQWdTCkRRYVN2aUhWREluYkwrSlgwempvWFNld2tNQVZTNHErTVlTdmFMNHBDVVZpVlBOZlRZMnIwczhrYWRjbUI3c0UKQXRERGlwYkdOUnNiVzZoUkFvSUJBRFdwL2Y3N0MvTnpPK3NYc3d4UVJ2V2pZZElhZnBLd2d1aG0wU0xhYkxwMwpUZm5mclUxZ0drU1JPTHM0SGVyRUMvSlgzVnpMUGdSdytIL09ZUCs0bEZSYVdvQUVCOVhDcEx3QXdhU2RqV09ZCjIwM3Y2UU9oY2NLeWxZUlNwajFGMWJjaVZnUWVKcnN1aHlOZmlYcXJtQldpQXM1U0h3d29oSldlalFVcHRlK1oKZDJRWFZmdGtPdktwZHk1MUxZaGlOU0pUUTBwNWFDMnBUR0FVcGRRTGxOYytUQUFtTXh2TitROUlXWVJWcHZ2agp5NExPcEwrZVdoMTZZVGNnWlRYRTFJbWQ1ZGNyblhPUGtNMjZFM2dCL0EyRkRzcGFuaGlGWDlaNXVZRDFIYWYwCjgwMk53d1hIbDlCY0lsVndObVRkWlFhTXdBaGxyWjAvZWp0RmRDRUNnZ0VBSi85WkxWQURDeFJGaTZOclQ2SFAKcmxmbnljM0RQK0FGekZGcENuQnlwbTFCZU5pdnJ5cE9RSVE5MzQ3WVdzaVBtWVdLZHJmN3hXSVZhdnVydjNIWQpBVkxDQVhmdEdJN2YzQWxOWGEwNHBlb3lLS1d1MGx5VzZnU3lUeVNzWnRFeS9QdzF0NDVsYm4vUlVEaWhyRXl5ClF2MDFJTjJjY3U1RGF3QjdNcStXeWw0WVJOUU92dXN4VHpONHE0RGRYSi9YMzRFaGRJQnVJbmZVd1hrL0Z1ZTgKRXYzSm9Hc0JaTmJvQWhJNzlXcGw4VWpFWSs4b3ZhUm5acVBoZnovZ01raGxZM2ZzUWJ5c1RPMVZUS2Rla1hPbgoxLzRxaWRkT2JnUWlVSDNKWWZqZTFWWldQaml1Z1FRWnBCTTh1dnlSZmp4UXNaVVZwL0JsazYrWXYwRjZrUT09Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0=
+
+---
+# 3. Basic Authentication Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: basic-auth
+  namespace: secure-ingress-demo
+type: Opaque
+data:
+  # Username: admin, Password: secure-password
+  # These are base64 encoded credentials
+  auth: YWRtaW46JGFwcjEkbjdDdTZnZWwkcEFTMVc1c0RUMEZabFB6SWc2SzFuMAo=
+
+---
+# 4. Secure Ingress with TLS and Basic Auth
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure-ingress
+  namespace: secure-ingress-demo
+  annotations:
+    # Enable Basic Authentication
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+    
+    # Security Headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'";
+    
+    # Ensure HTTPS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # Rate Limiting
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-connections: "5"
+    
+    # Backend Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - secure-app.example.com
+    secretName: tls-secret
+  rules:
+  - host: secure-app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-app
+            port:
+              number: 80
+
+---
+# 5. Protected API deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: secure-ingress-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      containers:
+      - name: api-service
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: api-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: api-content
+        configMap:
+          name: api-content
+
+---
+# Service for the API
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: secure-ingress-demo
+spec:
+  selector:
+    app: api-service
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# ConfigMap for API content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-content
+  namespace: secure-ingress-demo
+data:
+  index.html: |
+    {
+      "status": "ok",
+      "message": "This is a secure API endpoint"
+    }
+
+---
+# 6. JWT Token Authentication
+# This example uses JWT tokens for authentication
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jwt-secret
+  namespace: secure-ingress-demo
+type: Opaque
+data:
+  # This is a placeholder for the actual secret
+  # In production, use a proper JWT signing key
+  jwk: eyJrZXlzIjpbeyJrIjoiWlpsQVBYbGREdnEzWWpBYWxJN2Iwb0dCVFVrV0JIM2NLMmVJSWstQjdWayIsImt0eSI6Im9jdCIsImtpZCI6IjAwMDEifV19
+
+---
+# 7. Secure API Ingress with JWT authentication
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: secure-api-ingress
+  namespace: secure-ingress-demo
+  annotations:
+    # JWT Authentication
+    nginx.ingress.kubernetes.io/auth-url: "https://oauth2-proxy.auth.svc.cluster.local/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://oauth2-proxy.auth.svc.cluster.local/oauth2/start?rd=$scheme://$host$request_uri"
+    
+    # Additional security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+      
+    # CORS settings
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://app.example.com"
+    
+    # API-specific rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: tls-secret
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 80
+
+---
+# 8. NetworkPolicy to restrict traffic to Ingress-protected services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-only-access
+  namespace: secure-ingress-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: web-app
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    # Only allow traffic from ingress-controller namespace
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# 9. NetworkPolicy for API service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-access
+  namespace: secure-ingress-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: api-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    # Only allow traffic from ingress-controller and web-app
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    - podSelector:
+        matchLabels:
+          app: web-app
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# Notes on Ingress Security Best Practices:
+#
+# 1. TLS Certificates:
+#    - Always use TLS termination for HTTPS
+#    - Consider using cert-manager for automated certificate management
+#    - Use strong TLS versions and ciphers (TLS 1.2+)
+#
+# 2. Authentication Methods:
+#    - Basic Auth: Simple but less secure
+#    - JWT/OAuth2: Better for production workloads
+#    - External Auth Service: For complex auth requirements
+#
+# 3. Security Headers:
+#    - X-Frame-Options: Prevents clickjacking
+#    - X-Content-Type-Options: Prevents MIME type sniffing
+#    - Strict-Transport-Security: Forces HTTPS usage
+#    - Content-Security-Policy: Controls resource loading
+#
+# 4. Rate Limiting:
+#    - Prevent DoS attacks
+#    - Different limits for different endpoints
+#
+# 5. Network Policies:
+#    - Restrict access to backend services
+#    - Allow only necessary communication paths
+#
+# 6. Additional Considerations:
+#    - API Keys for service-to-service communication
+#    - WebSocket security if needed
+#    - IP whitelisting for admin interfaces
+#    - Regular security scanning of ingress configurations
+#
+# Testing and Verification:
+#
+# 1. Test TLS configuration:
+#    curl -k -v https://secure-app.example.com
+#
+# 2. Test Basic Auth:
+#    curl -k -v -u admin:secure-password https://secure-app.example.com
+#
+# 3. Test JWT authentication:
+#    curl -k -v -H "Authorization: Bearer <token>" https://api.example.com/api
+#
+# 4. Verify security headers:
+#    curl -k -v -I https://secure-app.example.com | grep -i 'x-'
+#
+# 5. Test CORS configuration:
+#    curl -k -v -H "Origin: https://app.example.com" -X OPTIONS https://api.example.com/api 

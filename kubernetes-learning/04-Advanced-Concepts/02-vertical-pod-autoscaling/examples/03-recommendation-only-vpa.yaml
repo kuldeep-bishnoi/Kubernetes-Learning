@@ -1,0 +1,356 @@
+---
+# VPA in Recommendation-Only Mode
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpa-recommendation-demo
+---
+# ConfigMap with a web application that will generate traffic
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-config
+  namespace: vpa-recommendation-demo
+data:
+  app.py: |
+    #!/usr/bin/env python3
+    from flask import Flask, jsonify, request
+    import time
+    import threading
+    import random
+    import logging
+    import sys
+    
+    app = Flask(__name__)
+    
+    # Configure logging
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    
+    # Global variables to track state
+    memory_blocks = []
+    cpu_load = 0
+    
+    @app.route('/')
+    def home():
+        return "Resource Usage Demo App"
+    
+    @app.route('/status')
+    def status():
+        memory_usage = len(memory_blocks) * 10
+        return jsonify({
+            "memory_usage_mb": memory_usage,
+            "cpu_load_percent": cpu_load,
+            "timestamp": time.time()
+        })
+    
+    @app.route('/allocate_memory')
+    def allocate_memory():
+        mb = int(request.args.get('mb', 10))
+        logger.info(f"Allocating {mb}MB of memory")
+        for _ in range(mb):
+            memory_blocks.append('X' * 1024 * 1024)  # Allocate 1MB block
+        return jsonify({"allocated_mb": mb, "total_allocated_mb": len(memory_blocks) * 10})
+    
+    @app.route('/free_memory')
+    def free_memory():
+        global memory_blocks
+        memory_blocks = []
+        return jsonify({"status": "Memory freed"})
+    
+    @app.route('/cpu_load')
+    def set_cpu_load():
+        global cpu_load
+        percent = float(request.args.get('percent', 0))
+        duration = int(request.args.get('duration', 60))
+        cpu_load = percent
+        
+        def load_cpu(percent, duration):
+            logger.info(f"Generating {percent}% CPU load for {duration} seconds")
+            end_time = time.time() + duration
+            
+            while time.time() < end_time:
+                if percent > 0:
+                    # Calculate time to sleep to achieve target CPU utilization
+                    start_time = time.time()
+                    while time.time() - start_time < 0.01 * percent / 100:
+                        x = random.random() * random.random()
+                    time.sleep(0.01 * (1 - percent / 100))
+            
+            global cpu_load
+            cpu_load = 0
+            logger.info("CPU load finished")
+        
+        threading.Thread(target=load_cpu, args=(percent, duration)).start()
+        return jsonify({"cpu_load_percent": percent, "duration": duration})
+    
+    @app.route('/simulate_workload')
+    def simulate_workload():
+        """Simulates a realistic workload with variations in CPU and memory usage"""
+        threading.Thread(target=workload_simulation).start()
+        return jsonify({"status": "Workload simulation started"})
+    
+    def workload_simulation():
+        """Runs a simulation of varying workloads"""
+        logger.info("Starting workload simulation")
+        
+        # Run for a couple of hours with varying patterns
+        end_time = time.time() + 7200  # 2 hours
+        
+        while time.time() < end_time:
+            # Simulate different load patterns
+            
+            # Pattern 1: Low CPU, moderate memory
+            logger.info("Pattern 1: Low CPU, moderate memory")
+            set_cpu_load().json
+            allocate_memory().json
+            time.sleep(300)  # 5 minutes
+            
+            # Pattern 2: High CPU, low memory
+            logger.info("Pattern 2: High CPU, low memory")
+            free_memory().json
+            set_cpu_load().json
+            time.sleep(300)  # 5 minutes
+            
+            # Pattern 3: High CPU, high memory
+            logger.info("Pattern 3: High CPU, high memory")
+            set_cpu_load().json
+            allocate_memory().json
+            time.sleep(300)  # 5 minutes
+            
+            # Pattern 4: Low period
+            logger.info("Pattern 4: Recovery period")
+            free_memory().json
+            cpu_load = 0
+            time.sleep(300)  # 5 minutes
+        
+        logger.info("Workload simulation completed")
+    
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8080)
+  requirements.txt: |
+    flask==2.0.1
+    werkzeug==2.0.1
+---
+# Deployment for the web application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-usage-app
+  namespace: vpa-recommendation-demo
+spec:
+  selector:
+    matchLabels:
+      app: resource-usage-app
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: resource-usage-app
+    spec:
+      containers:
+      - name: web-app
+        image: python:3.9-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          pip install -r /app/requirements.txt
+          python /app/app.py
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 100m
+            memory: 200Mi
+          limits:
+            cpu: 200m
+            memory: 300Mi
+        volumeMounts:
+        - name: app-config
+          mountPath: /app
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: app-config
+        configMap:
+          name: web-app-config
+          defaultMode: 0777
+---
+# Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-usage-app
+  namespace: vpa-recommendation-demo
+spec:
+  selector:
+    app: resource-usage-app
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+---
+# VPA in "Off" mode for recommendation-only
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: resource-usage-vpa
+  namespace: vpa-recommendation-demo
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind: Deployment
+    name: resource-usage-app
+  updatePolicy:
+    updateMode: "Off"  # Only provides recommendations without applying them
+  resourcePolicy:
+    containerPolicies:
+    - containerName: '*'
+      minAllowed:
+        cpu: 50m
+        memory: 50Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 1Gi
+      controlledResources: ["cpu", "memory"]
+---
+# ConfigMap for visualization script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: recommendation-visualizer
+  namespace: vpa-recommendation-demo
+data:
+  visualize.sh: |
+    #!/bin/bash
+    
+    # This script extracts VPA recommendations and current resource settings
+    # and displays them in a more readable format
+    
+    NAMESPACE=vpa-recommendation-demo
+    DEPLOYMENT=resource-usage-app
+    VPA=resource-usage-vpa
+    
+    echo "=== Current vs Recommended Resources ==="
+    echo "----------------------------------------"
+    
+    # Current resources
+    CURRENT_RESOURCES=$(kubectl get deployment $DEPLOYMENT -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].resources}')
+    CURRENT_CPU_REQUEST=$(echo $CURRENT_RESOURCES | jq -r '.requests.cpu')
+    CURRENT_MEM_REQUEST=$(echo $CURRENT_RESOURCES | jq -r '.requests.memory')
+    CURRENT_CPU_LIMIT=$(echo $CURRENT_RESOURCES | jq -r '.limits.cpu')
+    CURRENT_MEM_LIMIT=$(echo $CURRENT_RESOURCES | jq -r '.limits.memory')
+    
+    # VPA recommendations
+    VPA_RECOMMENDATIONS=$(kubectl get vpa $VPA -n $NAMESPACE -o jsonpath='{.status.recommendation.containerRecommendations[0]}')
+    
+    if [ -z "$VPA_RECOMMENDATIONS" ]; then
+        echo "No VPA recommendations available yet. Wait a few minutes and try again."
+        exit 0
+    fi
+    
+    REC_CPU_LB=$(echo $VPA_RECOMMENDATIONS | jq -r '.lowerBound.cpu')
+    REC_MEM_LB=$(echo $VPA_RECOMMENDATIONS | jq -r '.lowerBound.memory')
+    REC_CPU_UB=$(echo $VPA_RECOMMENDATIONS | jq -r '.upperBound.cpu')
+    REC_MEM_UB=$(echo $VPA_RECOMMENDATIONS | jq -r '.upperBound.memory')
+    REC_CPU_TARGET=$(echo $VPA_RECOMMENDATIONS | jq -r '.target.cpu')
+    REC_MEM_TARGET=$(echo $VPA_RECOMMENDATIONS | jq -r '.target.memory')
+    
+    echo "RESOURCE  | CURRENT          | RECOMMENDED                      "
+    echo "          | REQUEST | LIMIT  | LOWER    | TARGET   | UPPER     "
+    echo "---------------------------------------------------------"
+    echo "CPU       | $CURRENT_CPU_REQUEST | $CURRENT_CPU_LIMIT | $REC_CPU_LB | $REC_CPU_TARGET | $REC_CPU_UB"
+    echo "Memory    | $CURRENT_MEM_REQUEST | $CURRENT_MEM_LIMIT | $REC_MEM_LB | $REC_MEM_TARGET | $REC_MEM_UB"
+    echo "---------------------------------------------------------"
+    
+    # Check if resource utilization is available
+    UTIL_DATA=$(kubectl get --raw "/apis/metrics.k8s.io/v1beta1/namespaces/$NAMESPACE/pods" | jq -r ".items[] | select(.metadata.name | startswith(\"$DEPLOYMENT\")) | .containers[0].usage")
+    
+    if [ ! -z "$UTIL_DATA" ]; then
+        CPU_USAGE=$(echo $UTIL_DATA | jq -r '.cpu')
+        MEM_USAGE=$(echo $UTIL_DATA | jq -r '.memory')
+        echo "Current Usage: CPU: $CPU_USAGE, Memory: $MEM_USAGE"
+    fi
+    
+    echo ""
+    echo "To apply these recommendations, you can:"
+    echo "1. Change the VPA updateMode to 'Auto' to let VPA automatically apply changes"
+    echo "2. Manually update the deployment with the target values using:"
+    echo "   kubectl patch deployment $DEPLOYMENT -n $NAMESPACE --patch '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"web-app\",\"resources\":{\"requests\":{\"cpu\":\"$REC_CPU_TARGET\",\"memory\":\"$REC_MEM_TARGET\"}}}]}}}}'"
+    echo ""
+
+# Test and Usage Instructions:
+# 
+# Prerequisites:
+# 1. VPA components must be installed on your cluster
+# 2. Install jq for the visualization script:
+#    ```
+#    sudo apt-get install jq  # For Debian/Ubuntu
+#    ```
+#
+# Deployment:
+# 1. Apply this manifest:
+#    ```
+#    kubectl apply -f 03-recommendation-only-vpa.yaml
+#    ```
+#
+# 2. Generate load on the application:
+#    ```
+#    # Get the service endpoint
+#    kubectl port-forward svc/resource-usage-app 8080:80 -n vpa-recommendation-demo
+#    ```
+#    
+#    # In another terminal, send requests to generate load:
+#    ```
+#    # Start workload simulation
+#    curl http://localhost:8080/simulate_workload
+#    
+#    # Or manually control load:
+#    # Generate CPU load (50% for 300 seconds)
+#    curl "http://localhost:8080/cpu_load?percent=50&duration=300"
+#    
+#    # Allocate memory (100MB)
+#    curl "http://localhost:8080/allocate_memory?mb=100"
+#    
+#    # Free memory when done
+#    curl http://localhost:8080/free_memory
+#    ```
+#
+# 3. View VPA recommendations (after a few minutes of load):
+#    ```
+#    kubectl describe vpa resource-usage-vpa -n vpa-recommendation-demo
+#    ```
+#
+# 4. Use the visualization script:
+#    ```
+#    # First, save the script to a file
+#    kubectl get configmap recommendation-visualizer -n vpa-recommendation-demo -o jsonpath='{.data.visualize\.sh}' > visualize.sh
+#    chmod +x visualize.sh
+#    ./visualize.sh
+#    ```
+#
+# 5. Apply the recommendations manually (since this is a recommendation-only VPA):
+#    ```
+#    # Get the recommended values
+#    TARGET_CPU=$(kubectl get vpa resource-usage-vpa -n vpa-recommendation-demo -o jsonpath='{.status.recommendation.containerRecommendations[0].target.cpu}')
+#    TARGET_MEM=$(kubectl get vpa resource-usage-vpa -n vpa-recommendation-demo -o jsonpath='{.status.recommendation.containerRecommendations[0].target.memory}')
+#    
+#    # Update the deployment
+#    kubectl patch deployment resource-usage-app -n vpa-recommendation-demo \
+#      --patch "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"web-app\",\"resources\":{\"requests\":{\"cpu\":\"$TARGET_CPU\",\"memory\":\"$TARGET_MEM\"}}}]}}}}"
+#    ```
+#
+# Notes:
+# - The "Off" mode VPA is ideal for production environments where you want controlled updates
+# - Using the visualization script helps teams make informed decisions about resource adjustments
+# - This approach gives you control over when pods are restarted to apply new resource settings 

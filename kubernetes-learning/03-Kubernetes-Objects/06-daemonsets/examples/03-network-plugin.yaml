@@ -1,0 +1,223 @@
+# Network Plugin DaemonSet Example
+# This demonstrates a DaemonSet for deploying a CNI network plugin on all nodes
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: calico-node
+  namespace: kube-system
+  labels:
+    k8s-app: calico-node
+spec:
+  selector:
+    matchLabels:
+      k8s-app: calico-node
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-node
+    spec:
+      # Node selector and tolerations ensure the plugin runs on all nodes
+      nodeSelector:
+        kubernetes.io/os: linux
+      tolerations:
+      # Make sure calico-node gets scheduled on all nodes.
+      - effect: NoSchedule
+        operator: Exists
+      # Mark the pod as a critical add-on for rescheduling.
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - effect: NoExecute
+        operator: Exists
+      # Important for network plugin to have host network access
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      serviceAccountName: calico-node
+      # Allow the pod to run on control plane nodes 
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        effect: NoSchedule
+      initContainers:
+      # This container installs the CNI binaries
+      - name: install-cni
+        image: calico/cni:v3.20.2
+        command: ["/install-cni.sh"]
+        env:
+          # Name of the CNI config file to create.
+          - name: CNI_CONF_NAME
+            value: "10-calico.conflist"
+          # The CNI network config to install on each node.
+          - name: CNI_NETWORK_CONFIG
+            valueFrom:
+              configMapKeyRef:
+                name: calico-config
+                key: cni_network_config
+          # Set the hostname based on the k8s node name.
+          - name: KUBERNETES_NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+        volumeMounts:
+          - mountPath: /host/opt/cni/bin
+            name: cni-bin-dir
+          - mountPath: /host/etc/cni/net.d
+            name: cni-net-dir
+        # Security context running as privileged to install CNI
+        securityContext:
+          privileged: true
+      # Main container for network functionality
+      containers:
+      - name: calico-node
+        image: calico/node:v3.20.2
+        env:
+          # Use Kubernetes API as the backing datastore.
+          - name: DATASTORE_TYPE
+            value: "kubernetes"
+          # Auto-detect the BGP IP address.
+          - name: IP
+            value: "autodetect"
+          # Enable IPv4
+          - name: IP_AUTODETECTION_METHOD
+            value: "first-found"
+          # Enable IPIP
+          - name: CALICO_IPV4POOL_IPIP
+            value: "Always"
+          # Set based on the k8s node name.
+          - name: NODENAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          # Disable file logging so `kubectl logs` works.
+          - name: CALICO_DISABLE_FILE_LOGGING
+            value: "true"
+        # Set privileged mode for network access
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 150Mi
+          limits:
+            cpu: 500m
+            memory: 500Mi
+        # Live checks to ensure network functionality
+        livenessProbe:
+          exec:
+            command:
+            - /bin/calico-node
+            - -felix-live
+            - -bird-live
+          periodSeconds: 10
+          initialDelaySeconds: 10
+          failureThreshold: 6
+        # Ready checks to ensure proper initialization
+        readinessProbe:
+          exec:
+            command:
+            - /bin/calico-node
+            - -felix-ready
+            - -bird-ready
+          periodSeconds: 10
+        # Mount volumes from host
+        volumeMounts:
+          - mountPath: /lib/modules
+            name: lib-modules
+            readOnly: true
+          - mountPath: /run/xtables.lock
+            name: xtables-lock
+          - mountPath: /var/run/calico
+            name: var-run-calico
+          - mountPath: /var/lib/calico
+            name: var-lib-calico
+            readOnly: false
+          - mountPath: /var/log/calico
+            name: var-log-calico
+            readOnly: false
+      volumes:
+        # Used by install-cni
+        - name: cni-bin-dir
+          hostPath:
+            path: /opt/cni/bin
+        - name: cni-net-dir
+          hostPath:
+            path: /etc/cni/net.d
+        # Used to access kernel modules
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        # Used to create per-pod-type iptables chains
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate
+        # Used for runtime state
+        - name: var-run-calico
+          hostPath:
+            path: /var/run/calico
+        # Used for dynamic config
+        - name: var-lib-calico
+          hostPath:
+            path: /var/lib/calico
+        # Used for logs
+        - name: var-log-calico
+          hostPath:
+            path: /var/log/calico
+            type: DirectoryOrCreate
+
+---
+# ConfigMap for CNI configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: calico-config
+  namespace: kube-system
+data:
+  # CNI network configuration
+  cni_network_config: |-
+    {
+      "name": "k8s-pod-network",
+      "cniVersion": "0.3.1",
+      "plugins": [
+        {
+          "type": "calico",
+          "log_level": "info",
+          "etcd_endpoints": "__ETCD_ENDPOINTS__",
+          "etcd_key_file": "__ETCD_KEY_FILE__",
+          "etcd_cert_file": "__ETCD_CERT_FILE__",
+          "etcd_ca_cert_file": "__ETCD_CA_CERT_FILE__",
+          "mtu": __CNI_MTU__,
+          "ipam": {
+              "type": "calico-ipam"
+          },
+          "policy": {
+              "type": "k8s"
+          },
+          "kubernetes": {
+              "kubeconfig": "__KUBECONFIG_FILEPATH__"
+          }
+        },
+        {
+          "type": "portmap",
+          "snat": true,
+          "capabilities": {"portMappings": true}
+        },
+        {
+          "type": "bandwidth",
+          "capabilities": {"bandwidth": true}
+        }
+      ]
+    }
+
+---
+# Service Account for calico-node
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-node
+  namespace: kube-system 

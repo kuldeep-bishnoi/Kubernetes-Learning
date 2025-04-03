@@ -1,0 +1,416 @@
+# Real-world example of using ConfigMaps and Secrets in a complete application
+# This example demonstrates a web application with database connection, TLS, and environment-specific config
+
+---
+# Application configuration ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-config
+  labels:
+    app: web-application
+    environment: production
+data:
+  # Environment-specific settings
+  APP_ENV: production
+  LOG_LEVEL: info
+  ALLOWED_HOSTS: "example.com,www.example.com"
+  ENABLE_CACHE: "true"
+  CACHE_TTL: "3600"
+  MAX_THREADS: "10"
+  SESSION_TIMEOUT: "86400"
+  RATE_LIMIT: "100"
+  METRICS_ENABLED: "true"
+  
+  # Feature flags
+  FEATURES_SOCIAL_LOGIN: "true"
+  FEATURES_DARK_MODE: "true"
+  FEATURES_NOTIFICATIONS: "true"
+  
+  # Nginx configuration
+  nginx.conf: |
+    server {
+      listen 80;
+      listen [::]:80;
+      server_name example.com www.example.com;
+      
+      # Redirect HTTP to HTTPS
+      return 301 https://$host$request_uri;
+    }
+    
+    server {
+      listen 443 ssl http2;
+      listen [::]:443 ssl http2;
+      server_name example.com www.example.com;
+      
+      # SSL configuration
+      ssl_certificate /etc/ssl/certs/tls.crt;
+      ssl_certificate_key /etc/ssl/private/tls.key;
+      ssl_protocols TLSv1.2 TLSv1.3;
+      ssl_prefer_server_ciphers on;
+      ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+      
+      # Security headers
+      add_header X-Frame-Options "SAMEORIGIN";
+      add_header X-XSS-Protection "1; mode=block";
+      add_header X-Content-Type-Options "nosniff";
+      
+      # Assets and static files
+      location /static/ {
+        alias /usr/share/nginx/html/static/;
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000";
+      }
+      
+      location /media/ {
+        alias /usr/share/nginx/html/media/;
+        expires 30d;
+        add_header Cache-Control "public, max-age=2592000";
+      }
+      
+      # Proxy API requests to backend
+      location /api/ {
+        proxy_pass http://app-service:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+      }
+      
+      # Handle all other requests (SPA fallback)
+      location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+      }
+    }
+  
+  # Application properties file
+  application.properties: |
+    # Server settings
+    server.port=8080
+    server.tomcat.max-threads=${MAX_THREADS}
+    server.compression.enabled=true
+    server.compression.mime-types=application/json,application/xml,text/html,text/plain
+    
+    # Logging
+    logging.level.root=INFO
+    logging.level.com.example=${LOG_LEVEL}
+    logging.pattern.console=%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
+    
+    # Cache configuration
+    cache.enabled=${ENABLE_CACHE}
+    cache.ttl.seconds=${CACHE_TTL}
+    
+    # API rate limiting
+    api.ratelimit.enabled=true
+    api.ratelimit.limit=${RATE_LIMIT}
+    api.ratelimit.refresh-period=60
+    
+    # Database connection is configured from secrets
+    
+    # Redis cache settings
+    spring.redis.host=redis-service
+    spring.redis.port=6379
+    
+    # Feature flags
+    features.social-login=${FEATURES_SOCIAL_LOGIN}
+    features.dark-mode=${FEATURES_DARK_MODE}
+    features.notifications=${FEATURES_NOTIFICATIONS}
+
+---
+# Secrets for sensitive data
+apiVersion: v1
+kind: Secret
+metadata:
+  name: webapp-secrets
+  labels:
+    app: web-application
+    environment: production
+type: Opaque
+data:
+  # Database credentials (base64 encoded)
+  DB_HOST: cG9zdGdyZXMtc2VydmljZQ==  # postgres-service
+  DB_PORT: NTQzMg==  # 5432
+  DB_NAME: d2ViYXBwX3Byb2Q=  # webapp_prod
+  DB_USER: YXBwX3VzZXI=  # app_user
+  DB_PASSWORD: dFg3JXlOa0xAITRxeg==  # tX7%yNkL@!4qz
+  
+  # API keys (base64 encoded)
+  STRIPE_API_KEY: c2tfdGVzdF81MUlrRlNHSjl6UzYzRU1OTDNKRjY4RmJUdXFtSkU0ZWNOcUh1UzVuVUJFbk9wQktLeQ==  # sk_test_51IkFSGJ9zS63EMNL3JF68FbTuqmJE4ecNqHuS5nUBEnOpBKKy
+  MAILGUN_API_KEY: a2V5LTRhYzM3NWQ1M2FmNmE5Y2YzMDEzMjMxNGZlOWVlOWJk  # key-4ac375d53af6a9cf3013214fe9ee9bd
+  GOOGLE_MAPS_API_KEY: QUl6YVN5QXRpUVNYeVNCd1gyaGZxU29DT0UybkZkZjlrT21xLWtn  # AIzaSyAtiQSXySBwX2hfqSoCOE2nFdf9kOmq-kg
+  
+  # JWT signing key (base64 encoded)
+  JWT_SECRET: aDkzbnhtMjZAaHQ2YmpyNDImcGRyM3U3aHN5Xg==  # h93nxm26@ht6bjr42&pdr3u7hsy^
+  
+  # Redis password (base64 encoded)
+  REDIS_PASSWORD: c3VwZXJzZWNyZXRyZWRpc3Bhc3N3b3JkMTIzNCE=  # supersecretredispassword1234!
+
+---
+# TLS Certificate Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: webapp-tls
+  labels:
+    app: web-application
+type: kubernetes.io/tls
+data:
+  # These would be your real base64-encoded certificate and key
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUVMVENDQXhXZ0F3SUJBZ0lVZi9kdTJ0dU15QXNNMHFOaitJNkVzN0c2NTV3d0RRWUpLb1pJaHZjTkFRRUwKQlFBd2daTXhDekFKQmdOVkJBWVRBbFZUTVJNd0VRWURWUVFJREFwRFlXeHBabTl5Ym1saE1SWXdGQVlEVlFRSApEQTFFWlhabGJHOXdiV1Z1ZENCRFFURVdNQlFHQTFVRUNnd05SWGhoYlhCc1pTQkRiMjF3WVc1NU1SZ3dGZ1lEClZRUUxEQTlGZUdGdGNHeGxJRkpsYzI5MWNtTmxNUnN3R1FZRFZRUUREQkpsZUdGdGNHeGxMbU52YlM1bGVHRnQKY0d4bE1CNFhEVEl6TVRJek1ERXlNREF3TUZvWERUSTBNVEl5T1RFeU1EQXdNRm93Z1pNeEN6QUpCZ05WQkFZVApBbFZUTVJNd0VRWURWUVFJREFwRFlXeHBabTl5Ym1saE1SWXdGQVlEVlFRSERBMUVaWFpsYkc5d2JXVnVkQ0JEClFURVdNQlFHQTFVRUNnd05SWGhoYlhCc1pTQkRiMjF3WVc1NU1SZ3dGZ1lEVlFRTERBOUZlR0Z0Y0d4bElGSmwKYzI5MWNtTmxNUnN3R1FZRFZRUUREQkpsZUdGdGNHeGxMbU52YlM1bGVHRnRjR3hsTUlJQklqQU5CZ2txaGtpRwo5dzBCQVFFRkFBT0NBUThBTUlJQkNnS0NBUUVBMFVySjdlQStlYzUrZlFkOEhRaWxJVzFvMFNOeUwvNStVNUcvCm9pdVNZZnRQNEhKcTZvMmtUWjBMUXVld2dFamJCeFE0bmlmQVlaTDI1cWFiNldMZ29mQTR2MWtFVTQ5ZEVyTHoKNkRrcWwwcnZyRWxHOHNmRENSUFhzMERXK01BYnprRnVEMEUySnUxa3pFck9LK3VRRnRWditUbEppN0pGZkc5bgpBa0pFaHg4TmpuZGJxWWhDZjBWRXdoQzY4WkM0TGsrdFN6dkptWWVNZitDVnlKd0RtSzZuR1RuM3ZBQjhTTXZNCk1RL1F3UlFwM0JvcGRxT1o5Qy8wOFc2OWkwWUQ0dUpIUVJQaWVUS1BHRzhrVFA0OWY5ZjNDQ1Eyc2Z0WnExcWoKZkhHd00vT29qZmtxZDlodkUrZ0I2c3o2YXVYS3dKVlBCaE9wUWpzWUNsWUFWUkdYeFFJREFRQUJvNEdmTUlHYwpNQTRHQTFVZER3RUIvd1FFQXdJRm9EQWRCZ05WSFNVRUZqQVVCZ2dyQmdFRkJRY0RBUVlJS3dZQkJRVUhBd0l3CkhRWURWUjBPQkJZRUZIZ2Z6R0JtSXRoaEhjN0Z3MmFUdWRPVCtHZnlNQjhHQTFVZEl3UVlNQmFBRkhnZnpHQm0KSXRoaEhjN0Z3MmFUdWRPVCtHZnlNQ0VHQTFVZEVRUWFNQmlDRm1WNFlXMXdiR1V1WTI5dExtVjRZVzF3YkdVdQpZMjh3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUFtRkduRkJXNERncWplYW9kaklkZ2pybWRyRGhCa2ZRNkMrClNVQ2s1OUk0RVhvWCtSVjVFQnNpcEx0bHJJ](tls.crt truncated...)
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2UUlCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktjd2dnU2pBZ0VBQW9JQkFRRFJTc250NEQ1NXpuNTkKQjN3ZENLVWhiV2pSSTNJdi9uNVRrYitpSzVKaCswL2djbXJxamFSTm5RdEM1N0NBU05zSEZEaWVKOEJoa3ZibQpwcHZwWXVDaDhEaS9XUVJUajEwU3N2UG9PU3FYU3Urc1NVYnl4OE1KRTllelFOYjR3QnZPUVc0UFFUWW03V1RNClNzNHI2NUFXMVcvNU9VbUxza1Y4YjJjQ1FrU0hIdzJPZDF1cGlFSi9SVVRDRUxyeGtMZ3VUNjFMTzhtWmg0eC8KNEpYSW5BT1lycWNaT2ZlOEFIeEl5OHd4RDlEQkZDbmNHaWwybzVuMEwvVHhicjJMUmdQaTRrZEJFK0o1TW84WQpieVJNL2oxLzEvc0lKRGF4KzFtcldxTjhjYkF6ODZpTitTcDMySzhUNkFIcXpQcHE1Y3JBbFU4R0U2bENPeGdLClZnQlZFWmZGQWdNQkFBRUNnZ0VBRTJrY3YwK0hHUTViQ1loRUFLd2VuS1pEK05SbWErZ1hRd1pyY05kQjVZK0EKNmMySVZUU09rS1JtVGlOUXcwVXNXMkdUQ3JEWnlWR3BraGV2cDB2eW5JUHhTTnRhbGU5UW9IaHk3VnQ1eUpmcwpTOSsrcW02RWtvMllFcFE1N2tyN0F4bUh3QjZKanYzdU85akl1aFJYd1FJSGprT2xZOCt6RVJVVkRPNnM0Y2dkCkMzVUMzbnUrWFFKcjhkVDRmWlgzZmNUUko1QmpSeVQvb3VDS0xkbElBWXF3azVtcCtabXZuSFEwYTRvZ2lkMFEKeGtNYUliV25LaThaS3NTTjh2Sk1PUFN0Y3FBci9sOW0wenJJSkp5UGlORktLT3E3ZUQyaVkvVEd0YW5VaDV2TQpLVjFTOXlFalhSMUxjWWxqV29YRE5EcG9UQlJhNmhWVFdGbmtIc2hnQVFLQmdRRDFPbERJZ3BXdVdlbmpycVJZCjdUMTQ2S0hSSVVrdkN1QUZuM0w0a2Z6Sm54S2UyK0RQQkNNZi9FMW9JMjdCUnpaVGdaWXJpRHVxVHdscXlHTzUKSHdwV0FuOUNPSjYveUFyNFVGVGpmRDRZVEhyRWVoMUswSzRPTnpUV0xhL2xnYXdxeWFFYnI0MHFCZlUwNjAwRApxcGRkdmxsck83RkQrUzl3YWxVeVRCZXpBUUtCZ1FEYWdlZTBtUE04RFV3cHZ5WGhiN0Z5MWt3TlhkMjd3TFl0CmFidXhRSnJEcUZXRysxUVdBRnEyQnZpbGxVK0t5eWlWZlJkUTdEdTlPWk1SQ1FHYXdQcHBQVElZTXZVMGxuZkoKLzZ5TFlWbEt0UHVJbkk1L0prblJ6TEJnMnR3MlRxMjZNK242WElNNXUxenRPQjRwQjZSSml2cStRaGNpeGZKQgpHZWFscGExYkpRS0JnUURnRnlVQUlNQlNLMG16YmZEQllOMTB1WXdvUFdTMEdIQVRidGFaUks1QVlzUXM5K1lsCmliUnVHNlpYdFBNOGx3MVlWaENXNU40U21vaE03Z0FjYkJDMFJFQ0wwSGxpQThJTHJIcnpGU3dNdWRKdHRNNHgKUExlT0lpdFFHRnZ1bUZPRkIyM2xpVkJFcStNeHliQnhubitXQUlob0RJZzNzMnB0dWZpM3hQMEFBUUtCZ0MwQQpHZnJZMFZuZm1Wb2NSSnlveUUrNE10VXRYWHE5QTYzQ0o0enpHOFN1VWVMT1I3QjZxYklhLzBScVl2a21MRXJ6Ckw1VlZZZ2d6VFNra1NWdmYySU1YallQa3lwZ0VKMVFWRW14aGhCRmxJbUwvQTZlek9ZZTdrQXBXWGNuQy93T3kKdFZqL291SWhjOWhubEpkTFRFRDRob2ZXZVA2YldIcnJNK3BwQmxBaEFvR0FWa05yREE0UEZ3ckdrZHJDWlFrNQpPRkJWTEFLcHV4a2xGdjNxZUZNZkRWRUJKWi93eVVJNEM0VThqTk5hT001Q0Y4ZGc5UnhDeHR2Vld5ZGRDRW1tCnovRHBXaU5PQmZRMDg2VFpVek5TWExZSXd1RnhRbEV2djhEem9HakM4TUdKNWJuYm14dzQzVGZHK0VCYm5RY28KVnlsU1VtVC9LNUJYK2lwSFErYTIzUmM9Ci0tLS0tRU5EIFBSSVZBVEUgS0VZLS0tLS0K
+
+---
+# Deployment for the web server (nginx)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-frontend
+  labels:
+    app: web-application
+    tier: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-application
+      tier: frontend
+  template:
+    metadata:
+      labels:
+        app: web-application
+        tier: frontend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        - containerPort: 443
+        volumeMounts:
+        # Mount the nginx configuration
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: nginx.conf
+          readOnly: true
+        # Mount TLS certificates
+        - name: tls-certs
+          mountPath: /etc/ssl/certs/tls.crt
+          subPath: tls.crt
+          readOnly: true
+        - name: tls-certs
+          mountPath: /etc/ssl/private/tls.key
+          subPath: tls.key
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: webapp-config
+          items:
+          - key: nginx.conf
+            path: nginx.conf
+      - name: tls-certs
+        secret:
+          secretName: webapp-tls
+          defaultMode: 0400
+
+---
+# Deployment for the application backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-backend
+  labels:
+    app: web-application
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-application
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: web-application
+        tier: backend
+    spec:
+      containers:
+      - name: app
+        image: webapp-backend:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        # Environment variables from ConfigMap
+        - name: APP_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: webapp-config
+              key: APP_ENV
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: webapp-config
+              key: LOG_LEVEL
+        - name: ENABLE_CACHE
+          valueFrom:
+            configMapKeyRef:
+              name: webapp-config
+              key: ENABLE_CACHE
+        - name: CACHE_TTL
+          valueFrom:
+            configMapKeyRef:
+              name: webapp-config
+              key: CACHE_TTL
+        - name: MAX_THREADS
+          valueFrom:
+            configMapKeyRef:
+              name: webapp-config
+              key: MAX_THREADS
+        - name: RATE_LIMIT
+          valueFrom:
+            configMapKeyRef:
+              name: webapp-config
+              key: RATE_LIMIT
+              
+        # Environment variables from Secrets
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: DB_PASSWORD
+        - name: STRIPE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: STRIPE_API_KEY
+        - name: MAILGUN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: MAILGUN_API_KEY
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: JWT_SECRET
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: webapp-secrets
+              key: REDIS_PASSWORD
+        
+        # Mount configuration as files
+        volumeMounts:
+        - name: app-config
+          mountPath: /app/config/application.properties
+          subPath: application.properties
+          readOnly: true
+        
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+            
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: app-config
+        configMap:
+          name: webapp-config
+          items:
+          - key: application.properties
+            path: application.properties
+
+---
+# Service for the frontend
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  labels:
+    app: web-application
+    tier: frontend
+spec:
+  selector:
+    app: web-application
+    tier: frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 443
+  type: LoadBalancer
+
+---
+# Service for the backend
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-service
+  labels:
+    app: web-application
+    tier: backend
+spec:
+  selector:
+    app: web-application
+    tier: backend
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP 

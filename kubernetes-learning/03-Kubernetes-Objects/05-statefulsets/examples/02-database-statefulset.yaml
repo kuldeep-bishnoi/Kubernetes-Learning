@@ -1,0 +1,225 @@
+# MySQL StatefulSet with Master-Slave Replication
+# Demonstrates a stateful MySQL deployment with one master and two replicas
+
+# Headless service for DNS-based discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  ports:
+  - port: 3306
+    name: mysql
+  clusterIP: None                # Headless service for stable DNS entries
+  selector:
+    app: mysql
+
+---
+# Service for read-only slaves - provides load balancing for read queries
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-read
+  labels:
+    app: mysql
+    readonly: "true"
+spec:
+  ports:
+  - port: 3306
+    name: mysql
+  selector:
+    app: mysql
+    role: slave                 # Only routes traffic to slave pods
+
+---
+# ConfigMap to store MySQL configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+data:
+  master.cnf: |
+    # Master configuration
+    [mysqld]
+    log-bin=mysql-bin
+    server-id=1
+  slave.cnf: |
+    # Slave configuration
+    [mysqld]
+    server-id=100
+
+---
+# Secret for MySQL credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secrets
+type: Opaque
+data:
+  # echo -n 'password' | base64
+  password: cGFzc3dvcmQ=
+
+---
+# MySQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+spec:
+  serviceName: mysql            # Must reference the headless service
+  replicas: 3                   # 1 master and 2 slaves
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      initContainers:
+      - name: init-mysql        # Initialize MySQL with appropriate role
+        image: mysql:5.7
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # Generate MySQL server-id from pod ordinal index
+          [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          # Copy appropriate config map based on ordinal
+          if [[ $ordinal -eq 0 ]]; then
+            # This pod is the master
+            cp /mnt/config-map/master.cnf /etc/mysql/conf.d/
+            echo "This instance is master"
+          else
+            # This pod is a slave
+            cp /mnt/config-map/slave.cnf /etc/mysql/conf.d/
+            echo "This instance is slave"
+          fi
+        volumeMounts:
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        - name: config-map
+          mountPath: /mnt/config-map
+      - name: clone-mysql       # Clone data from master for slaves
+        image: gcr.io/google-samples/xtrabackup:1.0
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # Skip clone if data directory exists
+          [[ -d /var/lib/mysql/mysql ]] && exit 0
+          # Check if we need to clone data from master
+          [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          [[ $ordinal -eq 0 ]] && exit 0
+          # Clone from master
+          ncat --recv-only mysql-0.mysql 3307 | xbstream -x -C /var/lib/mysql
+          # Prepare the backup
+          xtrabackup --prepare --target-dir=/var/lib/mysql
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+      containers:
+      - name: mysql
+        image: mysql:5.7
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secrets
+              key: password
+        ports:
+        - name: mysql
+          containerPort: 3306
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+        - name: conf
+          mountPath: /etc/mysql/conf.d
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:          # Check if MySQL is running
+          exec:
+            command: ["mysqladmin", "ping", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:         # Check if MySQL is accepting connections
+          exec:
+            command: ["mysql", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}", "-e", "SELECT 1"]
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 1
+      - name: xtrabackup        # Sidecar for replication
+        image: gcr.io/google-samples/xtrabackup:1.0
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # Determine role from hostname
+          [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          
+          # If master, create replication user and handle backups
+          if [[ $ordinal -eq 0 ]]; then
+            # Wait for mysql to be ready
+            until mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1"; do sleep 1; done
+            
+            # Create replication user
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE USER 'repl'@'%' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}'; GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';"
+            
+            # Take backups for slaves
+            cd /var/lib/mysql
+            # Serve backups to other pods
+            exec ncat --listen --keep-open --send-only --max-conns=3 3307 -c \
+              "xtrabackup --backup --slave-info --stream=xbstream --host=127.0.0.1 --user=root --password=${MYSQL_ROOT_PASSWORD}"
+          else
+            # If slave, connect to master and start replication
+            # Wait for mysql to be ready
+            until mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1"; do sleep 1; done
+            
+            # Get master position from xtrabackup_slave_info
+            if [[ -f /var/lib/mysql/xtrabackup_slave_info ]]; then
+              # For slaves initialized from master backup
+              cat /var/lib/mysql/xtrabackup_slave_info | grep -E "[0-9]+-mysql-bin\.[0-9]+" | awk '{print "CHANGE MASTER TO MASTER_HOST=\"mysql-0.mysql\", MASTER_USER=\"repl\", MASTER_PASSWORD=\"${MYSQL_ROOT_PASSWORD}\", MASTER_LOG_FILE=\"" $5 "\", MASTER_LOG_POS=" $6 ";"}' | mysql -u root -p"${MYSQL_ROOT_PASSWORD}"
+              mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "START SLAVE;"
+            fi
+            
+            # Continuous health check
+            exec bash -c 'while true; do sleep 30; mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master; done'
+          fi
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secrets
+              key: password
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: conf
+        emptyDir: {}
+      - name: config-map
+        configMap:
+          name: mysql-config
+  volumeClaimTemplates:         # Persistent storage for MySQL data
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "standard"
+      resources:
+        requests:
+          storage: 10Gi 

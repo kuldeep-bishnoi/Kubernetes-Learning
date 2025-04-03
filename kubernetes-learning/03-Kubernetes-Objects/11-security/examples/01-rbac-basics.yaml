@@ -1,0 +1,218 @@
+# This example demonstrates basic RBAC (Role-Based Access Control) configuration in Kubernetes
+# RBAC allows you to define who can access what resources in your cluster
+
+---
+# Create a namespace for this example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rbac-demo
+  labels:
+    purpose: security-example
+
+---
+# 1. Service Account
+# Service accounts provide an identity for processes running in a Pod
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-viewer
+  namespace: rbac-demo
+
+---
+# 2. Role
+# A Role defines a set of permissions within a specific namespace
+# This role allows read-only access to pods, deployments, and services
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rbac-demo
+  name: pod-reader
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources: ["pods", "services"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "watch", "list"]
+
+---
+# 3. RoleBinding
+# A RoleBinding grants the permissions defined in a Role to a user, group, or service account
+# This RoleBinding grants the pod-reader role to the app-viewer service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: rbac-demo
+subjects:
+- kind: ServiceAccount
+  name: app-viewer
+  namespace: rbac-demo
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 4. ClusterRole
+# A ClusterRole is similar to a Role, but applies to all namespaces in the cluster
+# This ClusterRole allows read-only access to nodes and persistent volumes
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-resource-viewer
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "persistentvolumes"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "watch", "list"]
+
+---
+# 5. ClusterRoleBinding
+# A ClusterRoleBinding grants permissions across the entire cluster
+# This ClusterRoleBinding grants the cluster-resource-viewer role to a group of users
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: view-cluster-resources
+subjects:
+- kind: Group
+  name: system:monitoring
+  apiGroup: rbac.authorization.k8s.io
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: cluster-resource-viewer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 6. Role with specific resource names
+# This Role allows access only to specific resources by name
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rbac-demo
+  name: configmap-updater
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: ["app-config", "feature-flags"] # Only these specific ConfigMaps
+  verbs: ["get", "update"]
+
+---
+# 7. Role with advanced permissions
+# This Role allows more complex operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: rbac-demo
+  name: deployment-manager
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods/log", "pods/exec"]  # Allow viewing logs and executing commands in pods
+  verbs: ["get", "list", "create"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create"]
+
+---
+# 8. Service Account with Pod using the permissions
+# This demonstrates how a Pod uses a ServiceAccount to access the Kubernetes API
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployment-manager
+  namespace: rbac-demo
+
+---
+# RoleBinding for the deployment manager
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: manage-deployments
+  namespace: rbac-demo
+subjects:
+- kind: ServiceAccount
+  name: deployment-manager
+  namespace: rbac-demo
+roleRef:
+  kind: Role
+  name: deployment-manager
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# A Pod using the deployment-manager ServiceAccount
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-manager
+  namespace: rbac-demo
+spec:
+  serviceAccountName: deployment-manager  # This Pod uses the deployment-manager ServiceAccount
+  containers:
+  - name: kubectl-container
+    image: bitnami/kubectl:latest
+    command: ["sleep", "infinity"]
+    # The container has the KUBERNETES_SERVICE_* environment variables automatically
+    # And the ServiceAccount token is mounted at /var/run/secrets/kubernetes.io/serviceaccount/
+
+---
+# 9. Aggregated ClusterRole
+# This demonstrates how to create an aggregated role that combines permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-endpoints
+  labels:
+    rbac.example.com/aggregate-to-monitoring: "true"  # This label is used for aggregation
+rules:
+- apiGroups: [""]
+  resources: ["endpoints", "services", "pods"]
+  verbs: ["get", "list", "watch"]
+
+---
+# The aggregated ClusterRole that includes all roles with the matching label
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring
+aggregationRule:
+  clusterRoleSelectors:
+  - matchLabels:
+      rbac.example.com/aggregate-to-monitoring: "true"
+rules: [] # Rules are automatically filled in by the controller manager
+
+---
+# Testing and Verification:
+#
+# 1. Check if service account has the expected permissions:
+#    kubectl auth can-i get pods --as=system:serviceaccount:rbac-demo:app-viewer -n rbac-demo
+#
+# 2. Check if service account can perform restricted operations:
+#    kubectl auth can-i create pods --as=system:serviceaccount:rbac-demo:app-viewer -n rbac-demo
+#
+# 3. Impersonate a service account to test its permissions (for admins):
+#    kubectl get pods -n rbac-demo --as=system:serviceaccount:rbac-demo:deployment-manager
+#
+# 4. Execute a command in the k8s-manager pod to test actual access:
+#    kubectl exec -it k8s-manager -n rbac-demo -- kubectl get deployments
+#
+# 5. View the default token of a ServiceAccount:
+#    kubectl get secrets -n rbac-demo
+#    kubectl describe secret <token-name> -n rbac-demo
+#
+# Best Practices shown in this example:
+# 
+# 1. Principle of least privilege - each role has only the permissions it needs
+# 2. Resource-specific permissions - restricting to specific resources when possible
+# 3. Namespace isolation - using namespaced roles for most permissions
+# 4. Aggregation for reusability - using role aggregation for common permission sets
+# 5. Clear naming conventions - roles and bindings have descriptive names 

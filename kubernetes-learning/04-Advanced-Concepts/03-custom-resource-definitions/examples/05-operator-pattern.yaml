@@ -1,0 +1,568 @@
+---
+# Operator Pattern Example
+# This example demonstrates the Operator pattern for managing a complex application
+# In this case, a PostgreSQL database cluster with automated operations
+
+# First, define the CRD for PostgreSQL clusters
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: postgresclusters.database.example.com
+spec:
+  group: database.example.com
+  names:
+    kind: PostgresCluster
+    listKind: PostgresClusterList
+    plural: postgresclusters
+    singular: postgrescluster
+    shortNames:
+      - pgc
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["version", "instances", "storage"]
+              properties:
+                # PostgreSQL version
+                version:
+                  type: string
+                  pattern: "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$"
+                  description: "PostgreSQL version to deploy"
+                
+                # Cluster instances configuration
+                instances:
+                  type: object
+                  required: ["replicas"]
+                  properties:
+                    replicas:
+                      type: integer
+                      minimum: 1
+                      default: 1
+                      description: "Number of PostgreSQL instances"
+                    
+                    # Resource requirements
+                    resources:
+                      type: object
+                      properties:
+                        requests:
+                          type: object
+                          properties:
+                            cpu:
+                              type: string
+                              default: "100m"
+                            memory:
+                              type: string
+                              default: "256Mi"
+                        limits:
+                          type: object
+                          properties:
+                            cpu:
+                              type: string
+                              default: "1"
+                            memory:
+                              type: string
+                              default: "1Gi"
+                    
+                    # HA configuration
+                    highAvailability:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: false
+                        replicationMode:
+                          type: string
+                          enum: ["synchronous", "asynchronous"]
+                          default: "asynchronous"
+                
+                # Storage configuration
+                storage:
+                  type: object
+                  required: ["size"]
+                  properties:
+                    size:
+                      type: string
+                      pattern: "^[0-9]+(Gi|Mi|Ti)$"
+                      description: "Storage size for PostgreSQL data"
+                    storageClass:
+                      type: string
+                      description: "Kubernetes storage class to use"
+                
+                # Backup configuration
+                backup:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: true
+                    schedule:
+                      type: string
+                      description: "Cron schedule for backups"
+                      default: "0 1 * * *"  # Daily at 1 AM
+                    retention:
+                      type: object
+                      properties:
+                        days:
+                          type: integer
+                          minimum: 1
+                          default: 7
+                        count:
+                          type: integer
+                          minimum: 1
+                          default: 5
+                
+                # User management
+                users:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name", "databases"]
+                    properties:
+                      name:
+                        type: string
+                        description: "Username"
+                      databases:
+                        type: array
+                        items:
+                          type: string
+                      privileges:
+                        type: string
+                        enum: ["superuser", "readwrite", "readonly"]
+                        default: "readwrite"
+                
+                # Database configuration
+                databases:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name"]
+                    properties:
+                      name:
+                        type: string
+                        description: "Database name"
+                      owner:
+                        type: string
+                        description: "User that owns the database"
+                
+                # PostgreSQL configuration
+                postgresql:
+                  type: object
+                  properties:
+                    parameters:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: "PostgreSQL configuration parameters"
+                
+                # Maintenance configuration
+                maintenance:
+                  type: object
+                  properties:
+                    window:
+                      type: object
+                      properties:
+                        day:
+                          type: string
+                          enum: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+                        startTime:
+                          type: string
+                          pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+                        duration:
+                          type: string
+                          pattern: "^([0-9]+h)?([0-9]+m)?$"
+                    autoUpdate:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: false
+                        type:
+                          type: string
+                          enum: ["minor", "major", "patch"]
+                          default: "patch"
+            
+            # Status schema
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "Current phase of the cluster"
+                  enum:
+                    - "Pending"
+                    - "Creating"
+                    - "Running"
+                    - "Failed"
+                    - "Updating"
+                    - "Scaling"
+                primaryInstance:
+                  type: string
+                  description: "Name of the primary PostgreSQL instance"
+                readyReplicas:
+                  type: integer
+                  description: "Number of ready PostgreSQL instances"
+                health:
+                  type: string
+                  enum: ["Healthy", "Degraded", "Unknown"]
+                url:
+                  type: string
+                  description: "Connection URL for the PostgreSQL cluster"
+                lastBackup:
+                  type: object
+                  properties:
+                    time:
+                      type: string
+                      format: date-time
+                    status:
+                      type: string
+                      enum: ["Succeeded", "Failed", "InProgress"]
+                    location:
+                      type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                        description: "Type of the condition"
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      additionalPrinterColumns:
+        - name: Version
+          type: string
+          jsonPath: .spec.version
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.instances.replicas
+        - name: Storage
+          type: string
+          jsonPath: .spec.storage.size
+        - name: Status
+          type: string
+          jsonPath: .status.phase
+        - name: Health
+          type: string
+          jsonPath: .status.health
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+---
+# Example PostgresCluster resource
+apiVersion: database.example.com/v1
+kind: PostgresCluster
+metadata:
+  name: production-db
+  namespace: database
+spec:
+  version: "14.5"
+  instances:
+    replicas: 3
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+    highAvailability:
+      enabled: true
+      replicationMode: "synchronous"
+  storage:
+    size: "50Gi"
+    storageClass: "ssd-storage"
+  backup:
+    enabled: true
+    schedule: "0 1 * * *"
+    retention:
+      days: 14
+      count: 10
+  users:
+    - name: app_user
+      databases:
+        - "app_db"
+      privileges: "readwrite"
+    - name: reporting_user
+      databases:
+        - "app_db"
+      privileges: "readonly"
+    - name: admin
+      databases:
+        - "app_db"
+        - "postgres"
+      privileges: "superuser"
+  databases:
+    - name: "app_db"
+      owner: "app_user"
+  postgresql:
+    parameters:
+      max_connections: "200"
+      shared_buffers: "1GB"
+      work_mem: "64MB"
+      maintenance_work_mem: "256MB"
+      effective_cache_size: "3GB"
+  maintenance:
+    window:
+      day: "sunday"
+      startTime: "02:00"
+      duration: "2h"
+    autoUpdate:
+      enabled: true
+      type: "patch"
+---
+# Operator Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-operator
+  namespace: operators
+  labels:
+    app: postgres-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-operator
+  template:
+    metadata:
+      labels:
+        app: postgres-operator
+    spec:
+      serviceAccountName: postgres-operator
+      containers:
+      - name: operator
+        image: example.com/postgres-operator:v1.0.0
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        env:
+        - name: WATCH_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: OPERATOR_NAME
+          value: "postgres-operator"
+        ports:
+        - containerPort: 8080
+          name: metrics
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+# Service Account for the operator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-operator
+  namespace: operators
+---
+# RBAC: Role and RoleBinding for the operator
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: postgres-operator
+rules:
+# Watch and manage PostgresCluster resources
+- apiGroups: ["database.example.com"]
+  resources: ["postgresclusters", "postgresclusters/status", "postgresclusters/finalizers"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+# Manage underlying resources
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "persistentvolumeclaims", "configmaps", "secrets", "events"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "list", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: postgres-operator
+subjects:
+- kind: ServiceAccount
+  name: postgres-operator
+  namespace: operators
+roleRef:
+  kind: ClusterRole
+  name: postgres-operator
+  apiGroup: rbac.authorization.k8s.io
+
+# Test and Usage Instructions:
+# 
+# What is the Operator Pattern?
+# The Operator pattern extends Kubernetes to automate the management of complex stateful
+# applications. It encodes human operational knowledge into software that can manage
+# application-specific tasks automatically.
+#
+# Key Components:
+# 1. Custom Resource Definition (CRD): Defines the schema for the operator's resources
+# 2. Custom Controller: Watches for changes to custom resources and manages their lifecycle
+# 3. Domain-Specific Logic: Encodes operational knowledge (like backups, scaling, failover)
+#
+# This Example:
+# This PostgreSQL operator example demonstrates how to manage a PostgreSQL database cluster
+# with operational tasks like:
+# - High availability configuration with replication
+# - Automated backups and retention
+# - User and database management
+# - Configuration parameter management
+# - Maintenance windows and updates
+#
+# Installation:
+# 1. Apply the operator components:
+#    ```
+#    kubectl apply -f 05-operator-pattern.yaml
+#    ```
+# 
+# 2. Create a namespace for your databases:
+#    ```
+#    kubectl create namespace database
+#    ```
+#
+# 3. Create a PostgreSQL cluster:
+#    ```
+#    kubectl apply -f - <<EOF
+#    apiVersion: database.example.com/v1
+#    kind: PostgresCluster
+#    metadata:
+#      name: production-db
+#      namespace: database
+#    spec:
+#      version: "14.5"
+#      instances:
+#        replicas: 3
+#        highAvailability:
+#          enabled: true
+#      storage:
+#        size: "20Gi"
+#        storageClass: "standard"
+#      backup:
+#        enabled: true
+#      users:
+#        - name: app_user
+#          databases:
+#            - "app_db"
+#      databases:
+#        - name: "app_db"
+#          owner: "app_user"
+#    EOF
+#    ```
+#
+# 4. Monitor the cluster creation:
+#    ```
+#    kubectl get postgrescluster -n database production-db -w
+#    ```
+#
+# 5. Check detailed status:
+#    ```
+#    kubectl describe postgrescluster -n database production-db
+#    ```
+#
+# Operator Capabilities:
+#
+# Level 1: Basic Install
+# - The operator can deploy the application based on configuration
+# - Creates the required StatefulSets, Services, etc.
+#
+# Level 2: Seamless Upgrades
+# - Can update the PostgreSQL version in-place
+# - Handles database schema migrations
+#
+# Level 3: Full Lifecycle
+# - Manages backups and restores
+# - Handles user/database provisioning
+# - Implements configuration changes
+#
+# Level 4: Deep Insights
+# - Provides detailed status and health information
+# - Exposes metrics for monitoring
+# - Detects and reports anomalies
+#
+# Level 5: Auto Pilot
+# - Implements automatic horizontal scaling
+# - Performs automatic failover
+# - Self-heals when issues are detected
+# - Optimizes database configuration based on workload
+#
+# Common Operations Automated by This Operator:
+#
+# 1. Deployment:
+#    - Creates StatefulSet for PostgreSQL instances
+#    - Sets up Services for client access
+#    - Configures PersistentVolumeClaims for data storage
+#
+# 2. High Availability:
+#    - Configures leader election and replication
+#    - Manages primary/replica roles
+#    - Handles automatic failover
+#
+# 3. Backups:
+#    - Creates CronJobs for scheduled backups
+#    - Manages backup retention
+#    - Provides restore capability
+#
+# 4. User Management:
+#    - Creates database users with appropriate privileges
+#    - Manages database creation and ownership
+#
+# 5. Configuration:
+#    - Applies custom PostgreSQL configuration parameters
+#    - Updates configuration safely when changed
+#
+# 6. Maintenance:
+#    - Performs rolling updates during maintenance windows
+#    - Applies minor version updates automatically
+#    - Handles database vacuuming and maintenance tasks
+#
+# Note: This is a simplified example. A real PostgreSQL operator would include
+# more robust implementation details, recovery procedures, and operational safeguards.
+# Examples of production-ready PostgreSQL operators include:
+# - Zalando's Postgres Operator
+# - Crunchy Data's PGO
+# - CloudNativePG 

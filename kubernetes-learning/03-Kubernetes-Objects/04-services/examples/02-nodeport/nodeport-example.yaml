@@ -1,0 +1,199 @@
+# This file contains examples of NodePort services in Kubernetes
+
+# Example 1: Basic NodePort Service
+# This creates a simple web service that is accessible from outside the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-nodeport
+  labels:
+    app: web
+spec:
+  type: NodePort      # Explicitly set the service type to NodePort
+  selector:
+    app: web          # Selects pods with label app=web
+  ports:
+  - name: http
+    port: 80          # Port exposed internally (ClusterIP)
+    targetPort: 8080  # Port the application in the pod is listening on
+    nodePort: 30080   # Port exposed on each node (must be 30000-32767)
+---
+# Example 2: NodePort Service with Automatic Port Assignment
+# Kubernetes will automatically assign a port from the NodePort range
+apiVersion: v1
+kind: Service
+metadata:
+  name: auto-assigned-nodeport
+  annotations:
+    description: "NodePort with automatically assigned port"
+spec:
+  type: NodePort
+  selector:
+    app: api
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    # No nodePort specified, so Kubernetes will assign one
+---
+# Example 3: Multi-port NodePort Service
+# Exposing multiple ports on the same service
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-port-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: web-secure
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    nodePort: 30080
+  - name: https
+    port: 443
+    targetPort: 8443
+    nodePort: 30443
+---
+# Example 4: NodePort with ExternalTrafficPolicy
+# This preserves the client source IP by only sending traffic to pods on the same node
+apiVersion: v1
+kind: Service
+metadata:
+  name: preserve-client-ip
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local  # Only routes to pods on the receiving node
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30081
+---
+# Example 5: NodePort for Development Environment
+# Commonly used in development setups
+apiVersion: v1
+kind: Service
+metadata:
+  name: dev-api
+  labels:
+    env: development
+    tier: backend
+spec:
+  type: NodePort
+  selector:
+    app: api
+    env: development
+  ports:
+  - port: 8000
+    targetPort: 8000
+    nodePort: 30800
+---
+# Example 6: NodePort with annotations for external load balancer integration
+# These annotations might be used by custom controllers or operators
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-lb-service
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: api.example.com
+    load-balancer.example.com/pool: "frontend"
+    load-balancer.example.com/proxy-protocol: "true"
+spec:
+  type: NodePort
+  selector:
+    app: api
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30180
+---
+# Example 7: Complete Application Example - Deployment and NodePort Service
+# This includes both the Deployment and the Service that exposes it
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-application
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.19
+        ports:
+        - containerPort: 80
+        readinessProbe:  # Health check ensures service only routes to ready pods
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+# The NodePort service for the web-application deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-application
+spec:
+  type: NodePort
+  selector:
+    app: web  # Matches the Deployment's pod labels
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30090
+---
+# Example 8: NodePort Service with Specific Session Affinity
+# Routes traffic from the same client to the same pod (sticky sessions)
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-sticky-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: web-app
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 7200  # 2 hours
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30070
+---
+# Example 9: NodePort with specific IP Family policy
+# Forces the service to use only IPv4 addresses
+apiVersion: v1
+kind: Service
+metadata:
+  name: ipv4-only-nodeport
+spec:
+  type: NodePort
+  ipFamilyPolicy: SingleStack
+  ipFamilies:
+    - IPv4
+  selector:
+    app: legacy-app
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30180 

@@ -1,0 +1,141 @@
+# DaemonSet with Node Selection Example
+# This demonstrates a DaemonSet that only runs on specific nodes
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: storage-provisioner
+  namespace: storage
+  labels:
+    app: storage-provisioner
+spec:
+  selector:
+    matchLabels:
+      app: storage-provisioner
+  template:
+    metadata:
+      labels:
+        app: storage-provisioner
+    spec:
+      # Only run on nodes with SSD storage
+      nodeSelector:
+        storage-type: ssd
+      # Containers section
+      containers:
+      - name: storage-provisioner
+        image: k8s.gcr.io/sig-storage/local-volume-provisioner:v2.4.0
+        securityContext:
+          privileged: true # needed for access to local devices
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        resources:
+          limits:
+            cpu: 200m
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: discovery-vol
+          mountPath: /etc/provisioner/config
+          readOnly: true
+        - name: local-storage
+          mountPath: /mnt/disks
+          mountPropagation: "HostToContainer"
+      volumes:
+      - name: discovery-vol
+        configMap:
+          name: local-provisioner-config
+      - name: local-storage
+        hostPath:
+          path: /mnt/disks
+      # Service account with necessary permissions
+      serviceAccountName: local-storage-admin
+
+---
+# ConfigMap for the provisioner configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-provisioner-config
+  namespace: storage
+data:
+  storageClassMap: |
+    fast-disks:
+      hostDir: /mnt/disks
+      mountDir: /mnt/disks
+      blockCleanerCommand:
+        - "/scripts/shred.sh"
+        - "2"
+      volumeMode: Filesystem
+      fsType: ext4
+      namePattern: "*"
+
+---
+# Example of how to label nodes for this DaemonSet
+# In practice, you would use kubectl to label your nodes
+# Example command: kubectl label nodes node-1 storage-type=ssd
+apiVersion: v1
+kind: Node
+metadata:
+  name: example-node-1 # This is just an example, not a real manifest
+  labels:
+    storage-type: ssd  # This label will be matched by the nodeSelector
+spec: {}
+---
+
+# Service Account for local storage provisioner
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: local-storage-admin
+  namespace: storage
+
+---
+# RBAC for local storage provisioner
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-storage-provisioner-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "persistentvolumeclaims", "configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["endpoints", "persistentvolumes", "pods"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-storage-provisioner-binding
+subjects:
+- kind: ServiceAccount
+  name: local-storage-admin
+  namespace: storage
+roleRef:
+  kind: ClusterRole
+  name: local-storage-provisioner-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Storage Class created by the provisioner
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete 

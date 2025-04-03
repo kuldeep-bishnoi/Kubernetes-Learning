@@ -1,0 +1,106 @@
+# Advanced CronJob with various policies and configurations
+# Demonstrates different scheduling options, concurrency handling, and job controls
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: website-health-checker
+  labels:
+    app: monitoring
+    type: health-check
+  annotations:
+    description: "Checks website health and sends alerts if problems are detected"
+spec:
+  # Schedule: Run every 15 minutes
+  schedule: "*/15 * * * *"
+  
+  # Replace policy: If still running when new job should start,
+  # cancel the running job and start a new one
+  concurrencyPolicy: Replace
+  
+  # If true, no new jobs will be scheduled (can be used for maintenance)
+  suspend: false
+  
+  # Keep 5 successful jobs in history
+  successfulJobsHistoryLimit: 5
+  
+  # Keep 2 failed jobs in history
+  failedJobsHistoryLimit: 2
+  
+  # Must start within 30 seconds of scheduled time or will be counted as missed
+  startingDeadlineSeconds: 30
+  
+  # Job template
+  jobTemplate:
+    metadata:
+      labels:
+        app: monitoring
+      annotations:
+        alert-on-failure: "true"
+    spec:
+      # Only try once, then mark as failed
+      backoffLimit: 0
+      
+      # Time limit for job (45 seconds)
+      activeDeadlineSeconds: 45
+      
+      # Delete job 1 hour after completion
+      ttlSecondsAfterFinished: 3600
+      
+      template:
+        metadata:
+          labels:
+            app: monitoring
+            component: health-check
+        spec:
+          containers:
+          - name: health-checker
+            image: curlimages/curl:7.83.1
+            command: 
+            - "/bin/sh"
+            - "-c"
+            - |
+              # Check multiple websites and report status
+              echo "Starting health checks at $(date)"
+              
+              # Function to check a website and report status
+              check_site() {
+                site="$1"
+                echo "Checking $site..."
+                # -s silent, -S show error, -f fail on error, -o /dev/null discard output
+                # -w format output, --connect-timeout set timeout
+                response=$(curl -s -S -f -o /dev/null -w "%{http_code} %{time_total}s" \
+                  --connect-timeout 5 "$site" || echo "FAILED")
+                
+                if [[ "$response" == *"FAILED"* ]]; then
+                  echo "❌ $site is DOWN"
+                  # Would typically trigger an alert here
+                  # e.g., send to monitoring service or Slack webhook
+                else
+                  echo "✅ $site is UP: $response"
+                fi
+              }
+              
+              # Check multiple websites
+              check_site "https://kubernetes.io"
+              check_site "https://example.com"
+              check_site "https://nonexistentwebsite123456789.com"
+              
+              echo "Health check completed at $(date)"
+            resources:
+              requests:
+                cpu: 50m
+                memory: 20Mi
+              limits:
+                cpu: 100m
+                memory: 50Mi
+          # Set security context for container
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          
+          # Terminate pod gracefully
+          terminationGracePeriodSeconds: 5
+          
+          # Must finish quickly, so using Never instead of OnFailure
+          restartPolicy: Never 

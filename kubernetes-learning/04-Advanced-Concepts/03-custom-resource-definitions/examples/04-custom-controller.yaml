@@ -1,0 +1,403 @@
+---
+# Custom Controller Example for CRDs
+# This file demonstrates how a custom controller would be deployed
+# to work with a Custom Resource Definition
+
+# First, define the CRD that the controller will manage
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: microservices.apps.example.com
+spec:
+  group: apps.example.com
+  names:
+    kind: Microservice
+    listKind: MicroserviceList
+    plural: microservices
+    singular: microservice
+    shortNames:
+      - ms
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      subresources:
+        # Enable status subresource
+        status: {}
+        # Enable scale subresource for HPA compatibility
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.replicas
+          labelSelectorPath: .status.selector
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["image"]
+              properties:
+                image:
+                  type: string
+                  description: "Container image to deploy"
+                replicas:
+                  type: integer
+                  minimum: 0
+                  default: 1
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                  default: 8080
+                env:
+                  type: array
+                  items:
+                    type: object
+                    required: ["name"]
+                    properties:
+                      name:
+                        type: string
+                      value:
+                        type: string
+                      valueFrom:
+                        type: object
+                        properties:
+                          configMapKeyRef:
+                            type: object
+                            required: ["name", "key"]
+                            properties:
+                              name:
+                                type: string
+                              key:
+                                type: string
+                          secretKeyRef:
+                            type: object
+                            required: ["name", "key"]
+                            properties:
+                              name:
+                                type: string
+                              key:
+                                type: string
+                resources:
+                  type: object
+                  properties:
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                        memory:
+                          type: string
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                        memory:
+                          type: string
+                healthCheck:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                      default: "/health"
+                    port:
+                      type: integer
+                    initialDelaySeconds:
+                      type: integer
+                      minimum: 0
+                      default: 10
+                    periodSeconds:
+                      type: integer
+                      minimum: 1
+                      default: 10
+                ingress:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    host:
+                      type: string
+                    path:
+                      type: string
+                      default: "/"
+                    tls:
+                      type: boolean
+                      default: false
+            status:
+              type: object
+              properties:
+                replicas:
+                  type: integer
+                availableReplicas:
+                  type: integer
+                selector:
+                  type: string
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Deploying
+                    - Running
+                    - Failed
+                message:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required: ["type", "status"]
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      additionalPrinterColumns:
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Available
+          type: integer
+          jsonPath: .status.availableReplicas
+        - name: Status
+          type: string
+          jsonPath: .status.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+---
+# Service Account for the controller
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: microservice-controller
+  namespace: kube-system
+---
+# RBAC Role with permissions needed by the controller
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: microservice-controller
+rules:
+# Permissions to access the custom resources
+- apiGroups: ["apps.example.com"]
+  resources: ["microservices"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["apps.example.com"]
+  resources: ["microservices/status", "microservices/scale"]
+  verbs: ["get", "update", "patch"]
+# Permissions to manage the resources our controller will create
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Permissions to create events
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+# RBAC Role Binding to bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: microservice-controller
+subjects:
+- kind: ServiceAccount
+  name: microservice-controller
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: microservice-controller
+  apiGroup: rbac.authorization.k8s.io
+---
+# Deployment for the controller
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microservice-controller
+  namespace: kube-system
+  labels:
+    app: microservice-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: microservice-controller
+  template:
+    metadata:
+      labels:
+        app: microservice-controller
+    spec:
+      serviceAccountName: microservice-controller
+      containers:
+      - name: controller
+        image: example.com/microservice-controller:v1
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        args:
+        - "--v=2"
+        - "--leader-elect=true"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+---
+# Example Microservice resource that would be managed by the controller
+apiVersion: apps.example.com/v1
+kind: Microservice
+metadata:
+  name: user-service
+  namespace: default
+spec:
+  image: example.com/user-service:v1.2.3
+  replicas: 3
+  port: 8080
+  env:
+    - name: DB_HOST
+      value: "mysql.database"
+    - name: API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: user-service-secrets
+          key: api-key
+    - name: LOG_LEVEL
+      value: "info"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  healthCheck:
+    path: "/health"
+    initialDelaySeconds: 30
+    periodSeconds: 15
+  ingress:
+    enabled: true
+    host: "users.example.com"
+    path: "/"
+    tls: true
+
+# Test and Usage Instructions:
+# 
+# Overview:
+# This example demonstrates how a custom controller would be set up to manage Microservice custom resources.
+# The controller would watch for Microservice resources and create all the necessary Kubernetes objects
+# (Deployments, Services, Ingresses) based on the specification.
+#
+# Installation:
+# 1. Apply the CRD and controller resources:
+#    ```
+#    kubectl apply -f 04-custom-controller.yaml
+#    ```
+#
+# 2. Verify the controller is running:
+#    ```
+#    kubectl get pods -n kube-system -l app=microservice-controller
+#    ```
+# 
+# 3. Create a Microservice resource:
+#    ```
+#    kubectl apply -f - <<EOF
+#    apiVersion: apps.example.com/v1
+#    kind: Microservice
+#    metadata:
+#      name: user-service
+#      namespace: default
+#    spec:
+#      image: example.com/user-service:v1.2.3
+#      replicas: 3
+#      port: 8080
+#      env:
+#        - name: DB_HOST
+#          value: "mysql.database"
+#        - name: LOG_LEVEL
+#          value: "info"
+#      ingress:
+#        enabled: true
+#        host: "users.example.com"
+#    EOF
+#    ```
+#
+# 4. Check the status of the Microservice:
+#    ```
+#    kubectl get microservices
+#    kubectl describe microservice user-service
+#    ```
+#
+# 5. Observe the resources created by the controller:
+#    ```
+#    kubectl get deployments,services,ingresses -l microservice=user-service
+#    ```
+#
+# Controller Implementation Notes:
+# 
+# This example demonstrates the deployment of a controller, but the actual code would follow
+# the operator pattern with a reconciliation loop:
+#
+# 1. Watch Loop:
+#    - Watch for changes to Microservice resources
+#    - Queue changes for processing by reconciliation loop
+#
+# 2. Reconciliation Loop:
+#    - For each queued item, retrieve current state
+#    - Calculate desired state based on Microservice specification
+#    - Create or update Kubernetes resources to match desired state
+#    - Update status to reflect the current state
+#
+# 3. Controller Would Create:
+#    - Deployment with specified replicas, image, env vars, resources, probes
+#    - Service to expose the Deployment
+#    - Ingress if enabled in the specification
+#
+# 4. Owner References:
+#    - All created resources would have owner references pointing to the Microservice
+#    - This ensures garbage collection when the Microservice is deleted
+#
+# 5. Status Updates:
+#    - The controller would update the Microservice status with:
+#      - Current replicas and available replicas
+#      - Overall phase (Pending, Deploying, Running, Failed)
+#      - Specific conditions
+#
+# Key Learning Points:
+# - Controllers follow the operator pattern to reconcile desired vs. actual state
+# - RBAC is essential for controllers to access and manage resources
+# - Controllers use Owner References for resource management
+# - Status updates provide feedback on the current state of the resources
+# - The scale subresource enables integration with HPA
+#
+# Note: This is a simplified example. A real controller would be implemented using
+# frameworks like controller-runtime, kubebuilder, or Operator SDK with more robust
+# error handling, event recording, and recovery mechanisms. 

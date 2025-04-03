@@ -1,0 +1,332 @@
+# This example demonstrates how to connect Kubernetes applications to external services
+# using different approaches:
+# - ExternalName Service
+# - Service without selectors
+# - Endpoints API
+# - External DNS integration
+# - Ambassador/Proxy pattern
+
+---
+# Create a namespace for external service examples
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-services-demo
+  labels:
+    purpose: networking-demo
+
+---
+# Method 1: ExternalName Service
+# This creates a CNAME record in Kubernetes DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-api
+  namespace: external-services-demo
+  annotations:
+    "description": "External API service accessible via DNS"
+spec:
+  type: ExternalName
+  externalName: api.example.com  # Replace with actual external service
+  ports:
+  - port: 443
+    targetPort: 443
+    name: https
+
+---
+# Method 2: Service without selectors + Endpoints
+# First, create a service without selectors
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-database
+  namespace: external-services-demo
+  annotations:
+    "description": "External database using explicit endpoints"
+spec:
+  ports:
+  - port: 5432  # Port exposed by the service
+    targetPort: 5432  # Port on the external service
+    protocol: TCP
+    name: postgres
+
+---
+# Then, define Endpoints matching the service name
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: external-database  # Must match service name
+  namespace: external-services-demo
+subsets:
+  - addresses:
+    - ip: 192.168.1.100  # Replace with actual external IP
+    ports:
+    - port: 5432
+      name: postgres
+
+---
+# Method 3: Using EndpointSlices (more scalable)
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: external-database-slice
+  namespace: external-services-demo
+  labels:
+    kubernetes.io/service-name: external-database  # Must match service name
+addressType: IPv4
+ports:
+  - name: postgres
+    port: 5432
+    protocol: TCP
+endpoints:
+  - addresses:
+    - "192.168.1.100"  # Replace with actual external IP
+    conditions:
+      ready: true
+
+---
+# Method 4: Application using external services
+# This demonstrates an app using the above service definitions
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-app
+  namespace: external-services-demo
+  labels:
+    app: backend-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend-app
+  template:
+    metadata:
+      labels:
+        app: backend-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        env:
+        # Using ExternalName service
+        - name: API_ENDPOINT
+          value: "https://external-api.external-services-demo.svc.cluster.local"
+        
+        # Using endpoint-based service
+        - name: DB_HOST
+          value: "external-database.external-services-demo.svc.cluster.local"
+        - name: DB_PORT
+          value: "5432"
+
+---
+# Method 5: Ambassador/Proxy pattern
+# This creates a proxy in your cluster for an external service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-proxy
+  namespace: external-services-demo
+  labels:
+    app: redis-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-proxy
+  template:
+    metadata:
+      labels:
+        app: redis-proxy
+    spec:
+      containers:
+      - name: proxy
+        image: envoyproxy/envoy:v1.21.0
+        ports:
+        - containerPort: 6379
+          name: redis
+        volumeMounts:
+        - name: config
+          mountPath: /etc/envoy
+        resources:
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: config
+        configMap:
+          name: redis-proxy-config
+
+---
+# ConfigMap for the Envoy proxy configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-proxy-config
+  namespace: external-services-demo
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+      - name: redis_listener
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 6379
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.tcp_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+              stat_prefix: redis_tcp
+              cluster: redis_external
+    
+      clusters:
+      - name: redis_external
+        connect_timeout: 1s
+        type: LOGICAL_DNS
+        load_assignment:
+          cluster_name: redis_external
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: redis.example.com  # External Redis server
+                    port_value: 6379
+
+---
+# Service for the Redis proxy
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: external-services-demo
+spec:
+  selector:
+    app: redis-proxy
+  ports:
+  - port: 6379
+    targetPort: 6379
+    name: redis
+  type: ClusterIP
+
+---
+# Method 6: External DNS in cloud environments
+# This uses a Service of type LoadBalancer with annotations
+# that will create DNS records automatically
+apiVersion: v1
+kind: Service
+metadata:
+  name: public-api
+  namespace: external-services-demo
+  annotations:
+    # For AWS Route53 with external-dns controller
+    external-dns.alpha.kubernetes.io/hostname: api.mycompany.com
+    
+    # For Google Cloud DNS with external-dns controller
+    # external-dns.alpha.kubernetes.io/ttl: "300"
+spec:
+  selector:
+    app: backend-app
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  type: LoadBalancer  # Will get an external IP address
+
+---
+# Method 7: Cloud-specific service endpoints
+# The below is an example for AWS - these resources
+# are usually defined in infrastructure-as-code tools
+# like Terraform, not directly in Kubernetes
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-services
+  namespace: external-services-demo
+data:
+  # Typically, you would include URLs, connection strings,
+  # and other cloud service configuration information here
+  s3-endpoint: "s3.amazonaws.com"
+  dynamodb-endpoint: "dynamodb.us-west-2.amazonaws.com"
+  sqs-endpoint: "sqs.us-west-2.amazonaws.com"
+
+---
+# Client app consuming multiple external services
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-app
+  namespace: external-services-demo
+  labels:
+    app: client-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: client-app
+  template:
+    metadata:
+      labels:
+        app: client-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:alpine
+        volumeMounts:
+        - name: app-config
+          mountPath: /app/config
+        env:
+        # Using ExternalName service
+        - name: API_ENDPOINT
+          value: "https://external-api"
+        
+        # Using endpoint-based service
+        - name: DB_HOST
+          value: "external-database"
+        
+        # Using redis proxy
+        - name: REDIS_HOST
+          value: "redis"
+        
+        # Using cloud endpoints from ConfigMap
+        - name: S3_ENDPOINT
+          valueFrom:
+            configMapKeyRef:
+              name: aws-services
+              key: s3-endpoint
+      volumes:
+      - name: app-config
+        configMap:
+          name: app-config
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: external-services-demo
+data:
+  app.conf: |
+    # Sample app configuration
+    use_external_services=true
+    db_ssl=true
+    api_timeout=30
+    redis_timeout=5
+
+---
+# Testing instructions
+#
+# 1. To test connectivity to an external service via ExternalName:
+#    kubectl -n external-services-demo exec -it deploy/client-app -- wget -O- external-api:443
+#
+# 2. To test connectivity to an external service via Endpoints:
+#    kubectl -n external-services-demo exec -it deploy/client-app -- nc -zv external-database 5432
+#
+# 3. To test connectivity to an external service via proxy:
+#    kubectl -n external-services-demo exec -it deploy/client-app -- nc -zv redis 6379
+#
+# 4. Check the configured endpoints:
+#    kubectl -n external-services-demo get endpoints
+#    kubectl -n external-services-demo get endpointslices 

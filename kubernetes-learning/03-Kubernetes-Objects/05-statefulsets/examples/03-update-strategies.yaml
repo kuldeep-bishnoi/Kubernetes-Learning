@@ -1,0 +1,161 @@
+# StatefulSet Update Strategies Examples
+# This file demonstrates different update strategies for StatefulSets
+
+# Example 1: RollingUpdate with Partitioning
+# Demonstrates controlled updates by updating only pods with index >= partition
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-headless
+spec:
+  clusterIP: None
+  selector:
+    app: partition-update-demo
+  ports:
+  - port: 8080
+    name: web
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: partition-update-demo
+spec:
+  serviceName: app-headless
+  replicas: 5
+  updateStrategy:                   # Define update strategy
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 3                  # Only pods with index ≥ 3 will be updated
+  selector:
+    matchLabels:
+      app: partition-update-demo
+  template:
+    metadata:
+      labels:
+        app: partition-update-demo
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.20           # To update, change this to a newer version
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+
+---
+# Example 2: OnDelete Update Strategy
+# Updates pods only when they are manually deleted
+apiVersion: v1
+kind: Service
+metadata:
+  name: ondelete-app
+spec:
+  clusterIP: None
+  selector:
+    app: ondelete-app
+  ports:
+  - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ondelete-app
+spec:
+  serviceName: ondelete-app
+  replicas: 3
+  updateStrategy:
+    type: OnDelete                  # Only update pods when manually deleted
+  selector:
+    matchLabels:
+      app: ondelete-app
+  template:
+    metadata:
+      labels:
+        app: ondelete-app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.20
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+
+---
+# Example 3: Manual Upgrade Process with Partitioning
+# Shows a common pattern for manual, controlled upgrades using partitioning
+apiVersion: v1
+kind: Service
+metadata:
+  name: manual-upgrade-headless
+spec:
+  clusterIP: None
+  selector:
+    app: manual-upgrade
+  ports:
+  - port: 80
+    name: web
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: manual-upgrade
+  annotations:
+    # Annotations to track upgrade status (optional)
+    upgrade-status: "pending" 
+spec:
+  serviceName: manual-upgrade-headless
+  replicas: 6
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 6                  # Start with partition greater than replicas to block upgrades
+  selector:
+    matchLabels:
+      app: manual-upgrade
+  template:
+    metadata:
+      labels:
+        app: manual-upgrade
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.20
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi
+
+# To upgrade manually:
+# 1. Update the container image in the template
+# 2. Set partition to 5 (kubectl patch statefulset manual-upgrade -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":5}}}}')
+# 3. Wait for pod-5 to update and verify it works
+# 4. Continue reducing partition by 1 until all pods are updated
+# 5. Update the annotation to track progress: kubectl annotate statefulset manual-upgrade upgrade-status=completed --overwrite 

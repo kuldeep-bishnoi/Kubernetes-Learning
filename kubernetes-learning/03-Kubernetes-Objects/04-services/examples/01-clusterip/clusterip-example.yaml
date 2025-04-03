@@ -1,0 +1,155 @@
+# This file contains examples of ClusterIP services in Kubernetes
+
+# Example 1: Basic ClusterIP Service
+# This creates a basic backend service that is only accessible within the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  labels:
+    app: backend
+    tier: backend
+spec:
+  # ClusterIP is the default service type, so it can be omitted
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+  - name: http
+    port: 80        # The port exposed by the service
+    targetPort: 8080  # The port that the application in the pod is listening on
+---
+# Example 2: Multi-port ClusterIP Service
+# This service exposes multiple ports for the same set of pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  annotations:
+    description: "Web service with multiple ports"
+spec:
+  selector:
+    app: web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+  - name: metrics
+    port: 9100
+    targetPort: 9100
+    protocol: TCP
+---
+# Example 3: ClusterIP Service with Session Affinity
+# Routes clients to the same pod for consecutive requests
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-service
+spec:
+  selector:
+    app: session-app
+  sessionAffinity: ClientIP  # Sticky sessions based on client IP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600   # Session timeout (1 hour)
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 4: ClusterIP Service with Traffic Policy
+# Controls how traffic is routed to pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: local-traffic-service
+spec:
+  selector:
+    app: my-app
+  ports:
+  - port: 80
+    targetPort: 8080
+  internalTrafficPolicy: Local  # Only route to pods on the same node
+---
+# Example 5: ClusterIP Service without Selectors
+# Manually define the endpoints instead of auto-discovering them
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-database
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+# The corresponding Endpoints resource for the service without selectors
+apiVersion: v1
+kind: Endpoints
+metadata:
+  # Name must match the service name
+  name: external-database
+subsets:
+- addresses:
+  - ip: 192.168.1.100  # External IP address
+  ports:
+  - port: 5432
+---
+# Example 6: ClusterIP Service with a specific IP address
+# You can specify a particular IP in the service CIDR range
+apiVersion: v1
+kind: Service
+metadata:
+  name: fixed-ip-service
+spec:
+  selector:
+    app: stable-app
+  clusterIP: 10.96.100.100  # Specify a particular IP
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 7: ClusterIP Service with Named Ports
+# References ports by name from the pod template
+apiVersion: v1
+kind: Service
+metadata:
+  name: named-ports-service
+spec:
+  selector:
+    app: web-app
+  ports:
+  - name: http
+    port: 80
+    # References the port name defined in the pod
+    targetPort: http-port
+  - name: https
+    port: 443
+    targetPort: https-port
+---
+# The corresponding Deployment for the named ports example
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web-container
+        image: nginx:latest
+        ports:
+        - name: http-port
+          containerPort: 8080
+        - name: https-port
+          containerPort: 8443 

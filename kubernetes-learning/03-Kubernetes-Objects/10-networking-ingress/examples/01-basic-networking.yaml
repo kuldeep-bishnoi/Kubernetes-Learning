@@ -1,0 +1,263 @@
+# This example demonstrates basic pod-to-pod communication in Kubernetes
+
+---
+# First, create a namespace for our networking examples
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: networking-demo
+  labels:
+    app: networking-demo
+
+---
+# Backend API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-server
+  namespace: networking-demo
+  labels:
+    app: api-server
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-server
+  template:
+    metadata:
+      labels:
+        app: api-server
+    spec:
+      containers:
+      - name: api
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        # Configure Nginx to return a simple API response
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+        # Add a readiness probe to verify the service is running
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: api-nginx-config
+
+---
+# ConfigMap for API server Nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-nginx-config
+  namespace: networking-demo
+data:
+  default.conf: |
+    server {
+      listen 80;
+      
+      location /api/health {
+        return 200 '{"status": "healthy"}';
+        add_header Content-Type application/json;
+      }
+      
+      location /api/data {
+        return 200 '{"message": "Hello from the API server!", "pod_name": "$hostname"}';
+        add_header Content-Type application/json;
+      }
+    }
+
+---
+# Service for the API
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service
+  namespace: networking-demo
+spec:
+  selector:
+    app: api-server
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  # Using ClusterIP (default) for internal pod-to-pod communication
+  type: ClusterIP
+
+---
+# Frontend Web Application that communicates with the API
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: networking-demo
+  labels:
+    app: web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      # Add initContainer to wait for API to be ready
+      initContainers:
+      - name: wait-for-api
+        image: busybox:1.28
+        command: ['sh', '-c', 'until wget -qO- http://api-service/api/health; do echo waiting for api-service; sleep 2; done']
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: API_HOST
+          value: "api-service"
+        # Configure Nginx to serve a frontend that communicates with the API
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+        - name: web-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: web-nginx-config
+      - name: web-content
+        configMap:
+          name: web-content
+
+---
+# ConfigMap for Web application Nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-nginx-config
+  namespace: networking-demo
+data:
+  default.conf: |
+    server {
+      listen 80;
+      
+      root /usr/share/nginx/html;
+      index index.html;
+      
+      # Proxy API requests to the API service
+      location /api/ {
+        # This demonstrates pod-to-service communication
+        proxy_pass http://api-service/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+
+---
+# ConfigMap for Web content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-content
+  namespace: networking-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Kubernetes Networking Demo</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+        #result { padding: 20px; border: 1px solid #ddd; border-radius: 4px; }
+        button { padding: 10px 15px; background: #4CAF50; color: white; border: none; cursor: pointer; }
+      </style>
+    </head>
+    <body>
+      <h1>Kubernetes Networking Demo</h1>
+      <p>This demonstrates pod-to-pod communication via a Service.</p>
+      
+      <button onclick="callApi()">Call API</button>
+      <div id="result">API response will appear here</div>
+      
+      <script>
+        async function callApi() {
+          try {
+            // This frontend JS calls the backend API via the nginx proxy
+            // which demonstrates network communication through a service
+            const response = await fetch('/api/data');
+            const data = await response.json();
+            document.getElementById('result').innerText = 
+              `Message: ${data.message}\nPod Name: ${data.pod_name}`;
+          } catch (error) {
+            document.getElementById('result').innerText = 
+              `Error: ${error.message}`;
+          }
+        }
+      </script>
+    </body>
+    </html>
+
+---
+# Service for the Web application
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: networking-demo
+spec:
+  selector:
+    app: web-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  # Using NodePort so we can access from outside the cluster
+  type: NodePort
+
+---
+# Utility Pod for testing networking
+apiVersion: v1
+kind: Pod
+metadata:
+  name: network-utility
+  namespace: networking-demo
+  labels:
+    app: network-utility
+spec:
+  containers:
+  - name: network-utility
+    image: nicolaka/netshoot
+    command: ["sleep", "infinity"]
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "100m"
+      limits:
+        memory: "128Mi"
+        cpu: "200m"
+
+---
+# Instructions for testing networking:
+#
+# 1. Check if pods are running:
+#    kubectl get pods -n networking-demo
+#
+# 2. Test connectivity from the utility pod to the API:
+#    kubectl exec -it -n networking-demo network-utility -- curl http://api-service/api/data
+#
+# 3. Test DNS resolution:
+#    kubectl exec -it -n networking-demo network-utility -- nslookup api-service.networking-demo.svc.cluster.local
+#
+# 4. View the service endpoints:
+#    kubectl get endpoints -n networking-demo
+#
+# 5. Access the web app from outside (if using minikube):
+#    minikube service web-service -n networking-demo 

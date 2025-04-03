@@ -1,0 +1,83 @@
+# Basic DaemonSet Example
+# This demonstrates a simple DaemonSet for node monitoring
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter    # Must match Pod template labels
+  template:
+    metadata:
+      labels:
+        app: node-exporter  # Must match selector
+    spec:
+      # Security context to run with appropriate privileges
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534    # nobody user
+        fsGroup: 65534      # nobody group
+      # Containers section
+      containers:
+      - name: node-exporter
+        image: prom/node-exporter:v1.3.1
+        ports:
+        - containerPort: 9100
+          name: metrics
+          protocol: TCP
+        # Resource requests and limits
+        resources:
+          limits:
+            cpu: 100m
+            memory: 100Mi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+        # Make metrics available for scraping
+        args:
+        - --path.procfs=/host/proc
+        - --path.sysfs=/host/sys
+        - --web.listen-address=:9100
+        # Liveness probe to ensure container is running
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9100
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        # Readiness probe to know when ready to serve traffic
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 9100
+          initialDelaySeconds: 5
+          timeoutSeconds: 3
+        # Volume mounts for host metrics
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+      # Volumes to be mounted
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      # Toleration to run on all nodes, including control plane
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule 

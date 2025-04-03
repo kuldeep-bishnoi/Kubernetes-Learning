@@ -1,0 +1,361 @@
+# Scaling Behavior Rules for HPA Example
+# This example demonstrates how to customize the scaling behavior of the HPA
+
+---
+# Create a namespace for our resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: scaling-behavior-demo
+
+---
+# ConfigMap for our application
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: scaling-behavior-demo
+data:
+  index.php: |
+    <?php
+      // Simple script that can generate variable CPU load
+      $load = isset($_GET['load']) ? min(max((int)$_GET['load'], 0), 100) : 0;
+      $duration = isset($_GET['duration']) ? min(max((int)$_GET['duration'], 1), 60) : 10;
+      
+      $start = microtime(true);
+      $hostname = gethostname();
+      
+      header('Content-Type: text/plain');
+      
+      if ($load > 0) {
+          echo "Generating {$load}% CPU load for {$duration} seconds on {$hostname}...\n";
+          // Calculate iterations based on load percentage
+          $iterations = (int)(200000 * ($load / 100));
+          
+          $end = $start + $duration;
+          $count = 0;
+          
+          while (microtime(true) < $end) {
+              for ($i = 0; $i < $iterations; $i++) {
+                  $x = sin(sqrt(rand(1, 1000)));
+              }
+              $count++;
+              // Small sleep to prevent completely locking up the CPU
+              if ($load < 100) {
+                  usleep(($load < 50 ? 10000 : 5000) * (100 - $load) / 100);
+              }
+          }
+          
+          $actualDuration = microtime(true) - $start;
+          echo "Completed {$count} iterations over {$actualDuration} seconds\n";
+      } else {
+          echo "Hello from {$hostname}!\n";
+          echo "Use ?load=50&duration=10 to generate load\n";
+      }
+    ?>
+
+---
+# Deployment for our test application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-apache
+  namespace: scaling-behavior-demo
+spec:
+  selector:
+    matchLabels:
+      app: php-apache
+  replicas: 2  # Start with 2 replicas
+  template:
+    metadata:
+      labels:
+        app: php-apache
+    spec:
+      containers:
+      - name: php-apache
+        image: php:7.4-apache
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: php-app
+          mountPath: /var/www/html
+      volumes:
+      - name: php-app
+        configMap:
+          name: app-config
+          items:
+          - key: index.php
+            path: index.php
+
+---
+# Service for our application
+apiVersion: v1
+kind: Service
+metadata:
+  name: php-apache
+  namespace: scaling-behavior-demo
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: php-apache
+  type: ClusterIP
+
+---
+# HPA with Conservative Scaling Behavior
+# This example demonstrates a conservative approach that scales up slowly and down very slowly
+# Useful for stable workloads that don't need rapid response to traffic spikes
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: conservative-hpa
+  namespace: scaling-behavior-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-apache
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+  behavior:
+    scaleUp:
+      # Wait for 3 minutes of consistently high metrics before scaling up
+      stabilizationWindowSeconds: 180
+      policies:
+      # Add at most 1 pod every 3 minutes
+      - type: Pods
+        value: 1
+        periodSeconds: 180
+    scaleDown:
+      # Wait for 10 minutes of consistently low metrics before scaling down
+      stabilizationWindowSeconds: 600
+      policies:
+      # Remove at most 1 pod every 5 minutes
+      - type: Pods
+        value: 1
+        periodSeconds: 300
+
+---
+# HPA with Responsive Scaling Behavior (commented out to apply separately)
+# This example demonstrates a more responsive approach that scales up quickly but down conservatively
+# Useful for workloads with variable traffic patterns that need quick response to spikes
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: responsive-hpa
+#   namespace: scaling-behavior-demo
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: php-apache
+#   minReplicas: 2
+#   maxReplicas: 20
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 50
+#   behavior:
+#     scaleUp:
+#       # Scale up immediately when metrics exceed thresholds
+#       stabilizationWindowSeconds: 0
+#       policies:
+#       # Double the number of pods every 60 seconds
+#       - type: Percent
+#         value: 100
+#         periodSeconds: 60
+#       # But also allow adding up to 4 pods at once for larger spikes
+#       - type: Pods
+#         value: 4
+#         periodSeconds: 60
+#       # Use the higher result from the two policies
+#       selectPolicy: Max
+#     scaleDown:
+#       # Wait for 5 minutes before scaling down
+#       stabilizationWindowSeconds: 300
+#       policies:
+#       # Remove at most 10% of current pods every minute
+#       - type: Percent
+#         value: 10
+#         periodSeconds: 60
+
+---
+# HPA with Aggressive Scaling Behavior (commented out to apply separately)
+# This example demonstrates an aggressive approach that scales up very quickly and down quickly
+# Useful for workloads that need to respond immediately to traffic changes
+# Warning: This can lead to thrashing (rapid scaling up and down) if metrics are volatile
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: aggressive-hpa
+#   namespace: scaling-behavior-demo
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: php-apache
+#   minReplicas: 1
+#   maxReplicas: 30
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 50
+#   behavior:
+#     scaleUp:
+#       # Scale up immediately when metrics exceed thresholds
+#       stabilizationWindowSeconds: 0
+#       policies:
+#       # Triple the number of pods every 15 seconds
+#       - type: Percent
+#         value: 200
+#         periodSeconds: 15
+#       # Allow adding up to 10 pods at once for large spikes
+#       - type: Pods
+#         value: 10
+#         periodSeconds: 15
+#       # Use the higher result from the two policies
+#       selectPolicy: Max
+#     scaleDown:
+#       # Wait only 30 seconds before scaling down
+#       stabilizationWindowSeconds: 30
+#       policies:
+#       # Remove up to 50% of pods every 15 seconds
+#       - type: Percent
+#         value: 50
+#         periodSeconds: 15
+
+---
+# Load generator for testing (commented out - apply separately if needed)
+# apiVersion: batch/v1
+# kind: Job
+# metadata:
+#   name: load-generator
+#   namespace: scaling-behavior-demo
+# spec:
+#   template:
+#     spec:
+#       containers:
+#       - name: load-generator
+#         image: busybox
+#         command: ["/bin/sh", "-c", "while true; do wget -q -O- http://php-apache/index.php?load=80&duration=30; sleep 2; done"]
+#       restartPolicy: Never
+#   backoffLimit: 4
+
+---
+# Instructions for testing different scaling behaviors:
+#
+# Setup:
+# 1. Apply the base resources:
+#    kubectl apply -f 05-scaling-behavior.yaml
+#
+# Testing Conservative Scaling:
+# 1. Generate consistent load:
+#    kubectl -n scaling-behavior-demo run -i --tty load-test --image=busybox -- /bin/sh
+#    # Inside the container:
+#    while true; do wget -q -O- http://php-apache/index.php?load=80&duration=30; sleep 2; done
+#
+# 2. Watch the HPA:
+#    kubectl -n scaling-behavior-demo get hpa conservative-hpa -w
+#
+# 3. Observe how the HPA scales up slowly after several minutes of high load
+#
+# 4. Stop the load test (CTRL+C and 'exit' from the container shell)
+#
+# 5. Observe how the HPA takes a long time to scale down
+#
+# Testing Responsive Scaling:
+# 1. Edit the file to uncomment the responsive-hpa section
+#
+# 2. Apply the responsive HPA:
+#    kubectl apply -f 05-scaling-behavior.yaml
+#
+# 3. Generate variable load:
+#    kubectl -n scaling-behavior-demo run -i --tty load-test --image=busybox -- /bin/sh
+#    # Inside the container, run spikes of load:
+#    for i in {1..3}; do for j in {1..10}; do wget -q -O- http://php-apache/index.php?load=90&duration=10; done; sleep 30; done
+#
+# 4. Watch the HPA:
+#    kubectl -n scaling-behavior-demo get hpa responsive-hpa -w
+#
+# 5. Observe how the HPA scales up quickly during load spikes and down gradually
+#
+# Testing Aggressive Scaling:
+# 1. Edit the file to uncomment the aggressive-hpa section
+#
+# 2. Apply the aggressive HPA:
+#    kubectl apply -f 05-scaling-behavior.yaml
+#
+# 3. Generate erratic load:
+#    kubectl -n scaling-behavior-demo run -i --tty load-test --image=busybox -- /bin/sh
+#    # Inside the container, run erratic load:
+#    for i in {1..5}; do for j in {1..20}; do wget -q -O- http://php-apache/index.php?load=95&duration=5; done; sleep 10; done
+#
+# 4. Watch the HPA:
+#    kubectl -n scaling-behavior-demo get hpa aggressive-hpa -w
+#
+# 5. Observe how the HPA scales up very quickly and down quickly, potentially leading to thrashing
+#
+# Cleanup:
+# 1. Delete all resources:
+#    kubectl delete namespace scaling-behavior-demo
+
+---
+# Understanding HPA Behavior Configuration:
+#
+# stabilizationWindowSeconds:
+#   - How long the HPA waits with consistent metrics before scaling
+#   - Longer windows reduce thrashing but slow responsiveness
+#
+# policies:
+#   - Define how many pods can be added/removed in a given period
+#   - Can be defined as absolutes (Pods) or percentages (Percent)
+#
+# selectPolicy: 
+#   - When multiple policies are defined, determines which one to use
+#   - "Max": Use the policy that results in the largest change
+#   - "Min": Use the policy that results in the smallest change
+#
+# Recommendations for different workloads:
+#
+# 1. Stable, predictable traffic:
+#    - Longer stabilization windows
+#    - Conservative scaling policies
+#    - Example: Web applications with consistent daily patterns
+#
+# 2. Variable but predictable traffic:
+#    - Moderate stabilization windows
+#    - More aggressive scale-up than scale-down
+#    - Example: E-commerce sites with peak shopping hours
+#
+# 3. Unpredictable, bursty traffic:
+#    - Short scale-up stabilization windows
+#    - Quick scale-up policies
+#    - Moderate scale-down policies
+#    - Example: News sites during breaking news events
+#
+# 4. Event-based processing:
+#    - Minimal stabilization windows
+#    - Aggressive scaling policies
+#    - Consider using KEDA for event-driven scaling instead
+#    - Example: Processing queue-based workloads 

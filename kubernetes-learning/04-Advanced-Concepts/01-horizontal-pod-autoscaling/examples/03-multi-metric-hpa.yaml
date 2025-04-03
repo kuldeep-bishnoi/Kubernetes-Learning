@@ -1,0 +1,260 @@
+# Multi-metric Horizontal Pod Autoscaler Example
+# This example demonstrates an HPA that scales based on multiple metrics (CPU and memory)
+
+---
+# Create a namespace for our resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multi-metric-hpa-demo
+
+---
+# ConfigMap for our application that can generate both CPU and memory load
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-generator-config
+  namespace: multi-metric-hpa-demo
+data:
+  app.py: |
+    #!/usr/bin/env python3
+    import time
+    import os
+    import sys
+    import random
+    import math
+    from flask import Flask, request
+
+    app = Flask(__name__)
+
+    # Global list to hold memory
+    memory_chunks = []
+
+    @app.route('/')
+    def home():
+        return """
+        Load Generator API:
+        - /cpu?seconds=10&intensity=50 - Generate CPU load (intensity 1-100)
+        - /memory?mb=100 - Allocate memory in MB
+        - /free - Free all allocated memory
+        - /status - Show current memory allocations
+        """
+
+    @app.route('/cpu')
+    def generate_cpu_load():
+        """Generate CPU load for the specified duration"""
+        try:
+            seconds = int(request.args.get('seconds', '10'))
+            intensity = int(request.args.get('intensity', '50'))
+            
+            if seconds < 1:
+                seconds = 1
+            if seconds > 60:  # Cap at 60 seconds
+                seconds = 60
+                
+            if intensity < 1:
+                intensity = 1
+            if intensity > 100:
+                intensity = 100
+            
+            # Scale iterations based on intensity (more iterations = more CPU load)
+            iterations = int(20000 * (intensity / 100))
+            
+            start_time = time.time()
+            end_time = start_time + seconds
+            
+            count = 0
+            while time.time() < end_time:
+                # CPU-intensive calculation
+                for _ in range(iterations):
+                    x = random.random()
+                    math.sqrt(x)
+                count += 1
+            
+            duration = time.time() - start_time
+            hostname = os.uname()[1]
+            return f"Generated CPU load at {intensity}% intensity for {duration:.2f} seconds on host {hostname}. Completed {count} iterations."
+        except Exception as e:
+            return f"Error generating CPU load: {str(e)}"
+
+    @app.route('/memory')
+    def allocate_memory():
+        """Allocate the requested amount of memory in MB"""
+        try:
+            mb = int(request.args.get('mb', '10'))
+            if mb < 1:
+                mb = 10
+            if mb > 500:  # Safety cap
+                mb = 500
+            
+            # Allocate memory by creating a large list with random numbers
+            # Each number takes 8 bytes, so 1MB = 1024*1024/8 = 131,072 numbers
+            numbers_to_allocate = int((mb * 1024 * 1024) / 8)
+            chunk = [random.random() for _ in range(numbers_to_allocate)]
+            memory_chunks.append(chunk)
+            
+            hostname = os.uname()[1]
+            return f"Allocated {mb}MB of memory on host {hostname}. Total allocations: {len(memory_chunks)}"
+        except Exception as e:
+            return f"Error allocating memory: {str(e)}"
+
+    @app.route('/free')
+    def free_memory():
+        """Free all allocated memory"""
+        global memory_chunks
+        allocations = len(memory_chunks)
+        memory_chunks = []
+        return f"Freed all memory. {allocations} allocations released."
+
+    @app.route('/status')
+    def status():
+        """Show memory allocation status"""
+        total_mb = sum(sys.getsizeof(chunk) for chunk in memory_chunks) / (1024 * 1024)
+        return f"Current memory allocations: {len(memory_chunks)}, approximately {total_mb:.2f}MB"
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8080)
+
+---
+# Deployment running a Python Flask app that can generate both CPU and memory load
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-load-generator
+  namespace: multi-metric-hpa-demo
+spec:
+  selector:
+    matchLabels:
+      app: multi-load-generator
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: multi-load-generator
+    spec:
+      containers:
+      - name: load-generator
+        image: python:3.9-slim
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install flask
+            mkdir -p /app
+            cp /scripts/app.py /app/
+            cd /app
+            python app.py
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "200m"     # Request 200 millicores (0.2 CPU cores)
+            memory: "256Mi" # Request 256 MiB of memory
+          limits:
+            cpu: "500m"     # Limit to 500 millicores (0.5 CPU cores)
+            memory: "512Mi" # Limit to 512 MiB of memory
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: load-generator-config
+          defaultMode: 0777
+
+---
+# Service to expose the load generator
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-load-generator
+  namespace: multi-metric-hpa-demo
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: multi-load-generator
+  type: ClusterIP
+
+---
+# Horizontal Pod Autoscaler using multiple metrics (CPU and memory)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: multi-load-generator
+  namespace: multi-metric-hpa-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: multi-load-generator
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  # CPU metric - scale when average CPU utilization reaches 70%
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Memory metric - scale when average memory utilization reaches 70%
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleUp:
+      # Scale up quickly based on whichever metric triggers first
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      # Be more conservative about scaling down
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+
+---
+# Instructions for testing:
+#
+# 1. Apply this manifest to create the deployment and HPA:
+#    kubectl apply -f 03-multi-metric-hpa.yaml
+#
+# 2. Watch the HPA status to see which metric triggers scaling:
+#    kubectl -n multi-metric-hpa-demo get hpa multi-load-generator -w
+#
+# 3. Forward the service port to access the application:
+#    kubectl -n multi-metric-hpa-demo port-forward svc/multi-load-generator 8080:8080
+#
+# 4. Generate CPU load:
+#    curl "http://localhost:8080/cpu?seconds=30&intensity=80"
+#
+# 5. Generate memory load:
+#    curl "http://localhost:8080/memory?mb=100"
+#
+# 6. Check the status of memory allocations:
+#    curl "http://localhost:8080/status"
+#
+# 7. Observe which metric triggers scaling first:
+#    kubectl -n multi-metric-hpa-demo describe hpa multi-load-generator
+#
+# 8. Check resource usage of individual pods:
+#    kubectl -n multi-metric-hpa-demo top pods
+#
+# 9. Free memory to allow scaling down:
+#    curl "http://localhost:8080/free"
+#
+# 10. Observe scaling behavior as different metrics change:
+#     kubectl -n multi-metric-hpa-demo get deployment multi-load-generator -w
+#
+# Notes:
+# - The HPA will scale based on whichever metric exceeds its target first
+# - When multiple metrics are specified, the HPA will calculate a desired replica count for each metric
+#   and choose the highest number to ensure all metrics stay below their thresholds 

@@ -1,0 +1,55 @@
+# This example demonstrates the basic usage of Persistent Volumes and Persistent Volume Claims
+# It shows a static provisioning scenario where an admin creates a PV and a user claims it
+
+---
+# First, the administrator creates a Persistent Volume
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: example-pv
+  labels:
+    type: hostpath
+spec:
+  capacity:
+    storage: 1Gi  # Size of the volume
+  accessModes:
+    - ReadWriteOnce  # Can be used by a single node in read-write mode
+  persistentVolumeReclaimPolicy: Recycle  # What happens when PVC is deleted
+  storageClassName: manual  # Used to bind to PVCs requesting this class
+  hostPath:  # HostPath type (suitable for development/testing only)
+    path: "/mnt/data"
+
+---
+# Then, a user creates a Persistent Volume Claim to request storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: example-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce  # Request the same access mode
+  storageClassName: manual  # Request the storage class created earlier
+  resources:
+    requests:
+      storage: 500Mi  # Request storage (can be <= PV size)
+
+---
+# Finally, create a Pod that uses the PVC
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pv-pod
+spec:
+  containers:
+  - name: task-pv-container
+    image: nginx
+    ports:
+    - containerPort: 80
+      name: "http-server"
+    volumeMounts:
+    - mountPath: "/usr/share/nginx/html"  # Where to mount in container
+      name: task-pv-storage
+  volumes:
+  - name: task-pv-storage
+    persistentVolumeClaim:
+      claimName: example-pvc  # Reference to the PVC 

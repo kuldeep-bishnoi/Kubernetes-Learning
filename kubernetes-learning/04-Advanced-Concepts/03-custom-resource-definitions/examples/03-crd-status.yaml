@@ -1,0 +1,285 @@
+---
+# CRD with Status Subresource Example
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: jobs.batch.example.com
+spec:
+  group: batch.example.com
+  names:
+    kind: Job
+    listKind: JobList
+    plural: jobs
+    singular: job
+    shortNames:
+      - bj
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      # Enable status subresource
+      subresources:
+        # Define status as a subresource allowing separate updates to status
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: ["spec"]
+          properties:
+            spec:
+              type: object
+              required: ["script", "schedule"]
+              properties:
+                script:
+                  type: string
+                  description: "The script to execute"
+                schedule:
+                  type: string
+                  description: "Cron schedule format"
+                  pattern: "^(\\*|[0-9]|1[0-9]|2[0-9]|3[0-9]|4[0-9]|5[0-9])\\s(\\*|[0-9]|1[0-9]|2[0-3])\\s(\\*|[1-9]|1[0-9]|2[0-9]|3[0-1])\\s(\\*|[1-9]|1[0-2])\\s(\\*|[0-6])$"
+                timeoutSeconds:
+                  type: integer
+                  minimum: 1
+                  maximum: 86400
+                  default: 300
+                resources:
+                  type: object
+                  properties:
+                    memoryMB:
+                      type: integer
+                      minimum: 128
+                      maximum: 4096
+                      default: 256
+                    cpuMillicores:
+                      type: integer
+                      minimum: 100
+                      maximum: 2000
+                      default: 200
+                retryPolicy:
+                  type: object
+                  properties:
+                    maxRetries:
+                      type: integer
+                      minimum: 0
+                      maximum: 10
+                      default: 3
+                    retryInterval:
+                      type: integer
+                      description: "Retry interval in seconds"
+                      minimum: 1
+                      maximum: 3600
+                      default: 60
+            # Define the status subresource structure
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: "Current phase of the job"
+                  enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                    - Unknown
+                lastExecutionTime:
+                  type: string
+                  format: date-time
+                nextExecutionTime:
+                  type: string
+                  format: date-time
+                executionHistory:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      startTime:
+                        type: string
+                        format: date-time
+                      endTime:
+                        type: string
+                        format: date-time
+                      status:
+                        type: string
+                        enum:
+                          - Succeeded
+                          - Failed
+                      exitCode:
+                        type: integer
+                      output:
+                        type: string
+                        maxLength: 1024
+                      error:
+                        type: string
+                        maxLength: 1024
+                message:
+                  type: string
+                  description: "Human-readable message indicating details about last operation"
+                retryCount:
+                  type: integer
+                  minimum: 0
+                conditions:
+                  type: array
+                  description: "Current service state"
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                    properties:
+                      type:
+                        type: string
+                        description: "Type of job condition"
+                        enum:
+                          - Scheduled
+                          - Running
+                          - Complete
+                          - Failed
+                      status:
+                        type: string
+                        description: "Status of the condition, one of True, False, Unknown"
+                        enum:
+                          - "True"
+                          - "False"
+                          - "Unknown"
+                      lastProbeTime:
+                        type: string
+                        format: date-time
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                        description: "Machine-readable, UpperCamelCase reason for the condition's last transition"
+                      message:
+                        type: string
+                        description: "Human-readable message indicating details about last transition"
+      additionalPrinterColumns:
+        - name: Status
+          type: string
+          jsonPath: .status.phase
+        - name: Last-Execution
+          type: string
+          jsonPath: .status.lastExecutionTime
+        - name: Next-Execution
+          type: string
+          jsonPath: .status.nextExecutionTime
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+---
+# Example Custom Resource with status
+apiVersion: batch.example.com/v1
+kind: Job
+metadata:
+  name: daily-backup
+spec:
+  script: |
+    #!/bin/bash
+    echo "Starting daily backup..."
+    tar -czf /backups/data-$(date +%Y%m%d).tar.gz /data
+    echo "Backup completed successfully."
+  schedule: "0 2 * * *"  # Run at 2:00 AM every day
+  timeoutSeconds: 1800   # 30 minutes
+  resources:
+    memoryMB: 512
+    cpuMillicores: 500
+  retryPolicy:
+    maxRetries: 3
+    retryInterval: 300
+status:
+  phase: Succeeded
+  lastExecutionTime: "2023-05-15T02:00:00Z"
+  nextExecutionTime: "2023-05-16T02:00:00Z"
+  retryCount: 0
+  executionHistory:
+    - startTime: "2023-05-15T02:00:00Z"
+      endTime: "2023-05-15T02:05:23Z"
+      status: "Succeeded"
+      exitCode: 0
+      output: "Backup completed successfully. Archive size: 156MB."
+  message: "Last job completed successfully"
+  conditions:
+    - type: Scheduled
+      status: "True"
+      lastTransitionTime: "2023-05-14T00:00:00Z"
+      reason: "JobScheduled"
+      message: "Job has been scheduled"
+    - type: Complete
+      status: "True"
+      lastTransitionTime: "2023-05-15T02:05:23Z"
+      reason: "JobSucceeded"
+      message: "Job completed successfully"
+
+# Test and Usage Instructions:
+# 
+# Installation:
+# 1. Apply the CRD with status subresource to register the new resource type:
+#    ```
+#    kubectl apply -f 03-crd-status.yaml
+#    ```
+#
+# 2. Create a job resource:
+#    ```
+#    kubectl apply -f - <<EOF
+#    apiVersion: batch.example.com/v1
+#    kind: Job
+#    metadata:
+#      name: daily-backup
+#    spec:
+#      script: |
+#        #!/bin/bash
+#        echo "Starting daily backup..."
+#        tar -czf /backups/data-\$(date +%Y%m%d).tar.gz /data
+#        echo "Backup completed successfully."
+#      schedule: "0 2 * * *"
+#      timeoutSeconds: 1800
+#      resources:
+#        memoryMB: 512
+#        cpuMillicores: 500
+#    EOF
+#    ```
+#
+# 3. Update the status using the status subresource (typically done by controllers, not manually):
+#    ```
+#    kubectl patch jobs.batch.example.com daily-backup --subresource=status --type=merge -p '
+#    {"status": {"phase": "Running", "message": "Job is currently running", "conditions": [{"type": "Running", "status": "True", "lastTransitionTime": "2023-05-15T02:00:05Z", "reason": "JobStarted", "message": "Job has started execution"}]}}'
+#    ```
+#
+# 4. List the jobs with status information:
+#    ```
+#    kubectl get jobs.batch.example.com
+#    ```
+#
+# Key Status Subresource Features:
+# 
+# 1. Separation of Concern:
+#    - Status updates are managed separately from the resource specification
+#    - Users define the desired state in .spec, controllers update the actual state in .status
+#    - Prevents race conditions between client updates and controller status updates
+#
+# 2. Status Structure in Kubernetes:
+#    - Phase: Overall status of the object (Pending, Running, Succeeded, Failed)
+#    - Conditions: Detailed conditions with type, status, timestamps, and reasons
+#    - Resource-specific fields: Custom fields that describe the current state
+#
+# 3. Controller Pattern:
+#    - Controllers watch for changes in resources
+#    - Compare actual state with desired state
+#    - Take actions to reconcile differences
+#    - Update status to reflect the current state
+#
+# 4. Best Practices for Status:
+#    - Use standardized condition formats
+#    - Include timestamps for transitions
+#    - Provide human-readable messages
+#    - Add machine-readable reason codes
+#    - Keep a concise execution history
+#    - Include forward-looking information (nextExecutionTime)
+#
+# Notes:
+# - Status subresources can only be updated by authorized controllers, not directly by users
+# - The status update operation is separate from spec updates (using --subresource=status)
+# - The additionalPrinterColumns make it easy to see resource status in kubectl get commands
+# - A full implementation would include a controller watching for these resources and updating status 

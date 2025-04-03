@@ -1,0 +1,576 @@
+# This example demonstrates advanced Ingress features including:
+# - Rate limiting
+# - Authentication
+# - Canary deployments
+# - URL rewriting
+# - Custom error pages
+# - Backend health checks
+# - Session affinity
+
+---
+# Create a namespace for our advanced ingress examples
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: advanced-ingress-demo
+  labels:
+    purpose: ingress-demo
+
+---
+# Main Application - Production Version
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-v1
+  namespace: advanced-ingress-demo
+  labels:
+    app: main-app
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: main-app
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: main-app
+        version: v1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: app-content
+          mountPath: /usr/share/nginx/html
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: app-content
+        configMap:
+          name: app-v1-content
+
+---
+# ConfigMap for Production Version Content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-v1-content
+  namespace: advanced-ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Application v1</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f8f9fa; }
+        h1 { color: #0066cc; }
+        .version { color: #666; font-size: 0.8em; }
+      </style>
+    </head>
+    <body>
+      <h1>Main Application - Production Version</h1>
+      <p>This is the stable production version of our application.</p>
+      <p class="version">Version: v1</p>
+    </body>
+    </html>
+  health: "OK"
+
+---
+# Canary Version of the Application - 20% traffic
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-v2
+  namespace: advanced-ingress-demo
+  labels:
+    app: main-app
+    version: v2
+spec:
+  replicas: 1  # Fewer replicas for canary
+  selector:
+    matchLabels:
+      app: main-app
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: main-app
+        version: v2
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: app-content
+          mountPath: /usr/share/nginx/html
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: app-content
+        configMap:
+          name: app-v2-content
+
+---
+# ConfigMap for Canary Version Content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-v2-content
+  namespace: advanced-ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Application v2</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #e6f7ff; }
+        h1 { color: #0099ff; }
+        .version { color: #666; font-size: 0.8em; }
+        .new-feature { background-color: #ffffcc; padding: 10px; border-radius: 5px; }
+      </style>
+    </head>
+    <body>
+      <h1>Main Application - Canary Version</h1>
+      <p>This is the new canary version of our application with exciting new features!</p>
+      <div class="new-feature">
+        <h2>New Feature Alert!</h2>
+        <p>We've added an exciting new feature in this version.</p>
+      </div>
+      <p class="version">Version: v2</p>
+    </body>
+    </html>
+  health: "OK"
+
+---
+# Service for the Main Application (selects both v1 and v2)
+apiVersion: v1
+kind: Service
+metadata:
+  name: main-app-svc
+  namespace: advanced-ingress-demo
+spec:
+  selector:
+    app: main-app  # This selects pods from both deployments
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Service for v1 only (for A/B testing)
+apiVersion: v1
+kind: Service
+metadata:
+  name: main-app-v1-svc
+  namespace: advanced-ingress-demo
+spec:
+  selector:
+    app: main-app
+    version: v1
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Service for v2 only (for A/B testing)
+apiVersion: v1
+kind: Service
+metadata:
+  name: main-app-v2-svc
+  namespace: advanced-ingress-demo
+spec:
+  selector:
+    app: main-app
+    version: v2
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Protected Application requiring authentication
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protected-app
+  namespace: advanced-ingress-demo
+  labels:
+    app: protected-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: protected-app
+  template:
+    metadata:
+      labels:
+        app: protected-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: app-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: app-content
+        configMap:
+          name: protected-app-content
+
+---
+# ConfigMap for Protected App Content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: protected-app-content
+  namespace: advanced-ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Protected Application</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f0f0f0; }
+        h1 { color: #990000; }
+        .sensitive { background-color: #ffe6e6; padding: 10px; border-radius: 5px; }
+      </style>
+    </head>
+    <body>
+      <h1>Protected Application Area</h1>
+      <p>This is a protected area that requires authentication.</p>
+      <div class="sensitive">
+        <h2>Sensitive Information</h2>
+        <p>This area contains sensitive information that requires authorization.</p>
+      </div>
+    </body>
+    </html>
+
+---
+# Service for the Protected Application
+apiVersion: v1
+kind: Service
+metadata:
+  name: protected-app-svc
+  namespace: advanced-ingress-demo
+spec:
+  selector:
+    app: protected-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Secret for Basic Authentication
+apiVersion: v1
+kind: Secret
+metadata:
+  name: basic-auth
+  namespace: advanced-ingress-demo
+type: Opaque
+data:
+  # Username: admin, Password: admin123
+  # Created using: htpasswd -c auth admin
+  auth: YWRtaW46JGFwcjEkTEE5VS9lQ2okLkE0MktOL2FaM3RnTzNhWEUxTXRDLwoK
+
+---
+# TLS Secret for HTTPS
+apiVersion: v1
+kind: Secret
+metadata:
+  name: advanced-tls
+  namespace: advanced-ingress-demo
+type: kubernetes.io/tls
+data:
+  # In a real scenario, you would generate proper certificates
+  # The below are dummy certificates (same as the basic example)
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURMakNDQWhZQ0NRREFPRjl0THNhWFdqQU5CZ2txaGtpRzl3MEJBUXNGQURCYU1Rc3dDUVlEVlFRR0V3SlYKVXpFTE1Ba0dBMVVFQ0F3Q1EwRXhJVEFmQmdOVkJBb01HRWx1ZEdWeWJtVjBJRmRwWkdkcGRITWdVSFI1SUV4MApaREViTUJrR0ExVUVBd3dTWTJGbVpTNWxlR0Z0Y0d4bExtTnZiU0FnTUI0WERURTRNRGt4TWpFMk1UVXpOVm9YCkRUSXpNRGt4TVRFMk1UVXpOVm93V0RFTE1Ba0dBMVVFQmhNQ1ZWTXhDekFKQmdOVkJBZ01Ba05CTVNFd0h3WUQKVlFRS0RCaEpiblJsY201bGRDQlhhV1JuYVhSeklGQjBlU0JNZEdReEdUQVhCZ05WQkFNTUVHTmhabVV1Wlhoa1lYQndMbU52YlRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBTExnME5jCkVLQlBva2xOYTBrc1BBWGlPQ1pGNlJJdXhMdTJuUG1VSnZselFpQ1ZseDNEWG11R3VZUXl0TVpPUXhKTGZqWkgKWGxhZEJvKzRWbjVZdEczN1FXWGRhSEJmNGM1ZmdYRDhaTytIeUtiWElzT1VnWGJYNzNmOHIyWHVFTjI1UWQwTwpCWWZ0aHVjc2tkOUt1L1RYK1RnUmtBZU9QVEFIWnNYa0pKS21IS3JpaTl3WnRnK1JCM1hYdGNOZzhVeGRUeUlKCkVhNVp3N2RwcTI3VEJqQ2ZvRjRJVStEK1RmcHIvcHIrOXdLRkR6SENhYnA0cmFvdFVFWWppcTdLRTcyOXJYdmkKMFNHSnRSUExRYlhMbHZvMGl2Y2l1d0FpVUFaQWEzZGZtR1dIcGJEUUdjWm0waGp1V1NteTB2NHBKcnBxeUU1dApDV1BKQjIxcmJRSURBUUFCTUEwR0NTcUdTSWIzRFFFQkN3VUFBNElCQVFCWHNHUUlpQk9rcnU1RXkzNWlZTTVDCmh4N1RjaFVVSGdwZ3FEc1B6cVMyS2pEYlRJakhCYTFpYVhZVWQrM002U3VFT0dRcUZvUmVSZFJ3c2VaYks3UUgKWkFKb2RQVk1YYVowS3kwbDlTOU5xMEFXck5EdmxBMWJMVmZSMm5NMVVIMlJRMnE4Q0VGRDlCUUpzUmV5YlArSwpRR3F0SVpYTjZVYTFPVGUybVdJMUJwMWVVVDZLQWxKVjlsVEU1MU9HTlNhbTBzVUtNUE9tSzgxQjRPZ1FLaDRwCjFqMWV0dUtxZWs5KzB1RUZxL2ttdGJCbk9TUitJb1FJb0M4a0lOdy9BeEV1OFJBdEM2d2J5Wk9lY2x5aFVCUzYKcXVyQzQ4Rzh3ZzhTUlJIYzl5bElXSk95KzVzcUZXTW9kVDRXQnZGWmpPckxvWUh6WUhuZEQyVApLS0lsCkJaQzIKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ3k0TkRYQkNnVDZKSlQKV3RKTERRRjRqZ21SZWtTTHNTN3RwejVsQ2I1YzBJZ2xaY2R3MTV0aHJtRU1yVEdUa01TUzM0MlIxNVduUWFQdQpGWitXTFJ0KzBGbDNXaHdYK0hPWDRGdy9HVHZoOGltMXlMRGxJRjIxKzkzL0s5bDdoRGR1VUhkRGdXSDdZYm5MCkpIZlNydjAxL2s0RVpBSGpqMHdCMmJGNUNTU3BoeXE0b3ZjR2JZUGtRZDExN1hEWVBGTVhVOGlDUkd1V2NPM2EKYXRpMHdZd242QmVDRlBnL2szNmEvNmEvdmNDaFE4eHdtbTZlSzJxTFZCR0k0cXV5aE85dmExNzR0RWhpYlVUeQowRzF5NWI2TklyM0lyc0FJbEFHUUd0M1g1aGxoNld3MEJuR1p0SVk3bGtwc3RMK0tTYTZhc2hPYlFsanlRZHRhCjIwSURBUUFCQW9JQkFRQ3QrSEV2OWRRdzVjVDllN1JGcXZGUlBPSURrb01CZElYUGk5K3Evc2d3b3c1K2dRb3gKbHZJRFpuakUvK3JQV0xhbGVJUFhqL2RwbDVJUjA5WjVMY2JHMkQrVGJ1UmZkZXMrcG5aK3hqNzNyV0hHUHdhUQp0SjQ0OEJaMnRGZmpPeElvT1J6M0M3K3czaDZUL0F5ZWUyRWJJaDU0ZkhRU2NlUlRMdkdIQnZVZndLZU1PYzhPCkoxbFR5ZlhRTk9YY2xEYWRrZytIRHdXaWRZSkVnT0JMeEpvRGJnRjF1bEhwakRhWXgyNXdOZXNSQUtLZytPSHAKcHhxeXZnMnVsNzQ4eUJmSVE0UUZrcHZVemZSQS9LMEUvZ1p4TTBNYUpXYUhUNDNEcXI5Zko1VnVqeVhuVUlOSQpTV3N0cUY3dWp2SHdvL252a0RzSkEzNXo4RExNZ01xYUprK0JBb0dCQU5wUTUvbE1wYXJKdTNTSXBvU0pKZ0RECjdKYzhhUFoyYUFRNmM2UjlLVklDOTBPUGxreVlDRnN2Vm5aOWh4RVpTUjNENUNrYmpmT0F2WnVCNGJ2MXA1c28KcDRuTWs5K3R2YUNpRE1zZ3FLWUhlZkVPVjF1RDZOODNzSUdWTkh5KzNlbzVCNUZ6SjFvUkl5NkJCcStSOWt3RApPQmpnY05MRFpkSWlQT2FJb1F1UkFvR0JBTkxNUTVVY2RIR0xSbnNPei9qVnpWeWlUaXJZQUhIcE9JR0ZRR2VXCms2c2FBcmdDZG5pVVlRNEMvYzZKdWQ0eTBNUmZWbWE3cmE3cDVTQVozTnRjUzNmR1JYR3oyN1Ixd3lUREd6QWYKbVNpWVFReHg4T2FKUktQQk9IRHJIeFJvbzlwWjRib1dIUlB5S2puaGdSd2JYZVZoUEJ0U2FmZzVobkRncW50VwpaSllGQW9HQkFLOG9MVGJzRVg1WU14MXJtL0xrWElhbjJDWHZoL1lRK1UrdWNqM2NMWElvZTBTSFA1Q2pEOXo3ClNUaVE1R1JIR3hLOE1XSDBpNllUbFdYY2hPT1R3YlZ4S2pESUt5bm9kVTJ2ZWFmZFpkS1ZZdkpjZmRPOFFvNnMKRXBKbWZCVG9lNlJ3dFIrU2tLYzZPMHpxeElveGo3UnA4TitMVVVrajhXTlRkc3dVVHBDQkFvR0JBSmVVdnVNdgpGQS9RTWZ6TmxIQkJOOGJiK3ZrcDlUN3I2TkNlWUlEZ0x2TGZaL0pqZis2QmZCNDhFSFZsMDltMUVkYVNHK3paClEwZCtZNEZtV0JLendTMjJiOWNkNG91RnFxQ2wrMjlKczJMZDhBNWgrMEpUSUZ0TmppVUJPV1BUVWx3Qi9yKzkKaG44VE5OSUtZRnpRSENiSWZoUTdGR2dMR0E3UDN2ZGZLVUpzQW9HQkFKSzFXbTJzYTJJZnJVWExJbzJxY0E0cgpDOUp2QWFXZXRqSEdmWkhkQ290WGsyaW9LakRRdXRWbEQxUTdQU0dFQkdSbmVNdFFxUGE4a3RXSUY3STdXVmJHClJNbzZ1bWhDc2FPcVhGK3FVaG9qWEJ5Rk5NYWlUdGlIZ3F0MXRXL2JpQW90czlsYk9iODBuUEZCaFJRZk9HY3YKZlNzZzZBZ0ZneWUvZ083dGZWNzAKLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=
+
+---
+# ConfigMap for custom error pages
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-errors
+  namespace: advanced-ingress-demo
+data:
+  404.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Page Not Found</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; text-align: center; background-color: #f8f9fa; }
+        .error-code { font-size: 72px; color: #dc3545; margin: 0; }
+        .error-message { color: #555; }
+        .container { max-width: 600px; margin: 0 auto; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1 class="error-code">404</h1>
+        <h2 class="error-message">Page Not Found</h2>
+        <p>Sorry, the page you are looking for might have been removed or is temporarily unavailable.</p>
+        <p><a href="/">Return to homepage</a></p>
+      </div>
+    </body>
+    </html>
+  
+  500.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Server Error</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; text-align: center; background-color: #f8f9fa; }
+        .error-code { font-size: 72px; color: #dc3545; margin: 0; }
+        .error-message { color: #555; }
+        .container { max-width: 600px; margin: 0 auto; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1 class="error-code">500</h1>
+        <h2 class="error-message">Server Error</h2>
+        <p>We're sorry! Something went wrong on our end. We are working to fix it.</p>
+        <p><a href="/">Return to homepage</a></p>
+      </div>
+    </body>
+    </html>
+
+---
+# Advanced Ingress with multiple features
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: advanced-ingress
+  namespace: advanced-ingress-demo
+  annotations:
+    # Common annotations
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-connections: "5"
+    
+    # Custom error pages
+    nginx.ingress.kubernetes.io/custom-http-errors: "404,500"
+    nginx.ingress.kubernetes.io/default-backend: custom-error-pages
+    
+    # Canary configuration
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-by-header: "X-Canary"
+    nginx.ingress.kubernetes.io/canary-by-header-value: "always"
+    
+    # Rewrite rules
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    
+    # Backend configuration
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    
+    # Session affinity
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "INGRESSCOOKIE"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+    
+    # CORS configuration
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, PUT, POST, DELETE, PATCH, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - advanced.example.com
+    secretName: advanced-tls
+  rules:
+  - host: advanced.example.com
+    http:
+      paths:
+      # Main app path - with weighted canary deployment
+      - path: /app(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: main-app-svc  # This service includes both v1 and v2 pods
+            port:
+              number: 80
+    
+      # Protected path with Basic Auth
+      - path: /admin(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: protected-app-svc
+            port:
+              number: 80
+
+      # Direct route to v1 version (for A/B testing)
+      - path: /v1(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: main-app-v1-svc
+            port:
+              number: 80
+
+      # Direct route to v2 version (for A/B testing)
+      - path: /v2(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: main-app-v2-svc
+            port:
+              number: 80
+
+---
+# Canary Ingress for testing v2 version
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: canary-ingress
+  namespace: advanced-ingress-demo
+  annotations:
+    # Canary configuration
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "20"  # 20% of traffic to v2
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: advanced.example.com
+    http:
+      paths:
+      - path: /app(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: main-app-v2-svc  # Direct to v2 service
+            port:
+              number: 80
+
+---
+# Authentication configuration
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth-ingress
+  namespace: advanced-ingress-demo
+  annotations:
+    # Authentication settings
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: advanced.example.com
+    http:
+      paths:
+      - path: /admin(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: protected-app-svc
+            port:
+              number: 80
+
+---
+# Custom error pages deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-error-pages
+  namespace: advanced-ingress-demo
+spec:
+  selector:
+    matchLabels:
+      app: custom-error-pages
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: custom-error-pages
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: error-pages
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: error-pages
+        configMap:
+          name: custom-errors
+
+---
+# Service for custom error pages
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-error-pages
+  namespace: advanced-ingress-demo
+spec:
+  selector:
+    app: custom-error-pages
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Instructions for testing advanced Ingress features:
+#
+# 1. Add the host to your /etc/hosts file:
+#    127.0.0.1 advanced.example.com
+#
+# 2. Test the main application:
+#    curl -k https://advanced.example.com/app/
+#
+# 3. Test canary distribution (multiple requests will show different versions):
+#    curl -k https://advanced.example.com/app/
+#
+# 4. Force canary version:
+#    curl -k -H "X-Canary: always" https://advanced.example.com/app/
+#
+# 5. Access specific versions directly:
+#    curl -k https://advanced.example.com/v1/
+#    curl -k https://advanced.example.com/v2/
+#
+# 6. Test rate limiting (make multiple requests quickly):
+#    for i in {1..20}; do curl -k https://advanced.example.com/app/; done
+#
+# 7. Test protected area (should require authentication):
+#    curl -k https://advanced.example.com/admin/
+#
+# 8. Test with authentication:
+#    curl -k -u admin:admin123 https://advanced.example.com/admin/
+#
+# 9. Test custom error page:
+#    curl -k https://advanced.example.com/non-existent-path 

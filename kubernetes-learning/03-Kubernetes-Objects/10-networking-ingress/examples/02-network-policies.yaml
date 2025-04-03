@@ -1,0 +1,411 @@
+# This example demonstrates how to use NetworkPolicy resources to control traffic flow
+# between pods in a Kubernetes cluster
+# Note: You need a network plugin that supports NetworkPolicy (e.g. Calico, Cilium)
+
+---
+# Create a namespace for our network policy examples
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-policy-demo
+  labels:
+    purpose: network-policy-demo
+
+---
+# Backend database Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database
+  namespace: network-policy-demo
+  labels:
+    app: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+  template:
+    metadata:
+      labels:
+        app: database
+        role: data
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "demo-password" # Note: Use secrets in production
+        - name: POSTGRES_DB
+          value: "demo"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+---
+# Service for the database
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-svc
+  namespace: network-policy-demo
+spec:
+  selector:
+    app: database
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# API Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: network-policy-demo
+  labels:
+    app: api-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+        role: backend
+    spec:
+      containers:
+      - name: api
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: DB_HOST
+          value: "database-svc"
+        - name: DB_PORT
+          value: "5432"
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: api-nginx-config
+
+---
+# ConfigMap for API server
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-nginx-config
+  namespace: network-policy-demo
+data:
+  default.conf: |
+    server {
+      listen 80;
+      
+      location /api/health {
+        return 200 '{"status":"healthy"}';
+        add_header Content-Type application/json;
+      }
+      
+      location /api/data {
+        return 200 '{"message":"Data from API"}';
+        add_header Content-Type application/json;
+      }
+    }
+
+---
+# Service for the API
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-svc
+  namespace: network-policy-demo
+spec:
+  selector:
+    app: api-service
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Frontend Web Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: network-policy-demo
+  labels:
+    app: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        role: frontend
+    spec:
+      containers:
+      - name: web
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: API_HOST
+          value: "api-svc"
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: frontend-nginx-config
+
+---
+# ConfigMap for frontend
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-config
+  namespace: network-policy-demo
+data:
+  default.conf: |
+    server {
+      listen 80;
+      
+      location / {
+        return 200 'Frontend Web UI';
+      }
+      
+      location /api/ {
+        proxy_pass http://api-svc/api/;
+      }
+    }
+
+---
+# Service for the frontend
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: network-policy-demo
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# External client simulator
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-client
+  namespace: network-policy-demo
+  labels:
+    app: external-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: external-client
+  template:
+    metadata:
+      labels:
+        app: external-client
+        role: test
+    spec:
+      containers:
+      - name: client
+        image: nicolaka/netshoot
+        command: ["sleep", "infinity"]
+
+---
+# Policy 1: Default deny all traffic in the namespace
+# This creates a baseline "zero trust" setup
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: network-policy-demo
+spec:
+  # Empty podSelector matches all pods in the namespace
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+# Policy 2: Allow frontend to access API service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-api
+  namespace: network-policy-demo
+spec:
+  # This policy applies to the API service pods
+  podSelector:
+    matchLabels:
+      app: api-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    # Only allow traffic from pods with the frontend role
+    - podSelector:
+        matchLabels:
+          role: frontend
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# Policy 3: Allow API service to access database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-to-database
+  namespace: network-policy-demo
+spec:
+  # This policy applies to the database pods
+  podSelector:
+    matchLabels:
+      app: database
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    # Only allow traffic from pods with the backend role
+    - podSelector:
+        matchLabels:
+          role: backend
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# Policy 4: Allow external access to frontend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-to-frontend
+  namespace: network-policy-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from: []  # Empty from list means allow from anywhere
+    ports:
+    - protocol: TCP
+      port: 80
+
+---
+# Policy 5: Allow egress for API pods to reach the database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-egress-to-db
+  namespace: network-policy-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: api-service
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: database
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# Policy 6: Allow egress for frontend pods to reach the API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-egress-to-api
+  namespace: network-policy-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: api-service
+    ports:
+    - protocol: TCP
+      port: 80
+  # Allow DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# Test instructions for verifying network policies:
+#
+# 1. Check all resources:
+#    kubectl get all -n network-policy-demo
+#
+# 2. Test from external client to frontend (should work):
+#    kubectl exec -it -n network-policy-demo deploy/external-client -- curl frontend-svc
+#
+# 3. Test from external client to API (should fail):
+#    kubectl exec -it -n network-policy-demo deploy/external-client -- curl api-svc
+#
+# 4. Test from frontend to API (should work):
+#    kubectl exec -it -n network-policy-demo deploy/frontend -- curl api-svc/api/health
+#
+# 5. Test from frontend to database (should fail):
+#    kubectl exec -it -n network-policy-demo deploy/frontend -- nc -zv database-svc 5432
+#
+# 6. Test from API to database (should work):
+#    kubectl exec -it -n network-policy-demo deploy/api-service -- nc -zv database-svc 5432
+#
+# These tests verify your network policies are working correctly,
+# creating proper segmentation and security for your microservices. 

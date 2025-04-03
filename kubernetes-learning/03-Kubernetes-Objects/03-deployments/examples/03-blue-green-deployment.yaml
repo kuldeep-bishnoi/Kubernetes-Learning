@@ -1,0 +1,128 @@
+# Blue-Green Deployment Pattern
+# This file demonstrates a blue-green deployment approach in Kubernetes
+
+# Service (initially routing to blue deployment)
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend
+    version: blue     # Initially points to blue deployment
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+
+---
+# Blue Deployment (Current/Stable Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-blue
+  labels:
+    app: frontend
+    version: blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: blue
+    spec:
+      containers:
+      - name: frontend
+        image: my-app:1.0
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# Green Deployment (New Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-green
+  labels:
+    app: frontend
+    version: green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+      version: green
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: green
+    spec:
+      containers:
+      - name: frontend
+        image: my-app:1.1      # New version of the application
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+# Blue-Green Deployment Process:
+# 1. Initially, the service routes to the blue deployment (current version)
+# 2. Deploy the green deployment (new version) alongside the blue
+# 3. Test the green deployment internally (using its pod IP or separate test service)
+# 4. When ready to switch, update the service selector to point to green:
+#    kubectl patch service frontend -p '{"spec":{"selector":{"version":"green"}}}'
+# 5. Monitor for any issues; if problems arise, switch back to blue:
+#    kubectl patch service frontend -p '{"spec":{"selector":{"version":"blue"}}}'
+# 6. Once green is stable, you can delete the blue deployment or keep it for quick rollback:
+#    kubectl delete deployment frontend-blue
+
+---
+# Optional Testing Service for Green Deployment
+# Use this to test the green deployment before switching the main service
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-green
+  labels:
+    app: frontend
+    version: green
+spec:
+  selector:
+    app: frontend
+    version: green
+  ports:
+  - name: http
+    port: 80
+ 

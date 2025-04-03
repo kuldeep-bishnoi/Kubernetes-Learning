@@ -1,0 +1,264 @@
+# This file contains examples of LoadBalancer services in Kubernetes
+
+# Example 1: Basic LoadBalancer Service
+# This creates a simple web service that is accessible externally via a cloud load balancer
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-loadbalancer
+  labels:
+    app: web
+    environment: production
+spec:
+  type: LoadBalancer     # Explicitly set the service type to LoadBalancer
+  selector:
+    app: web             # Selects pods with label app=web
+  ports:
+  - name: http
+    port: 80             # Port the load balancer listens on
+    targetPort: 8080     # Port the application in the pod is listening on
+---
+# Example 2: LoadBalancer Service with Multiple Ports
+# Exposes both HTTP and HTTPS ports
+apiVersion: v1
+kind: Service
+metadata:
+  name: secure-web
+  annotations:
+    description: "Web service with HTTP and HTTPS"
+spec:
+  type: LoadBalancer
+  selector:
+    app: secure-web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+---
+# Example 3: AWS-specific LoadBalancer
+# Uses annotations specific to AWS to customize the load balancer
+apiVersion: v1
+kind: Service
+metadata:
+  name: aws-web-service
+  annotations:
+    # Use Network Load Balancer instead of Classic Load Balancer
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # Add SSL certificate
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:us-west-2:123456789012:certificate/abc123-xyz456"
+    # Enable SSL on specific ports
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    # Set the backend protocol
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+    # Set access log settings
+    service.beta.kubernetes.io/aws-load-balancer-access-log-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-access-log-s3-bucket-name: "my-elb-logs"
+    service.beta.kubernetes.io/aws-load-balancer-access-log-s3-bucket-prefix: "production/web"
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: https
+    port: 443
+    targetPort: 8080
+---
+# Example 4: GCP-specific LoadBalancer
+# Uses annotations specific to Google Cloud Platform
+apiVersion: v1
+kind: Service
+metadata:
+  name: gcp-web-service
+  annotations:
+    # Use Network Endpoint Groups
+    cloud.google.com/neg: '{"ingress": true}'
+    # Define protocol for specific ports
+    cloud.google.com/app-protocols: '{"https":"HTTPS", "http":"HTTP"}'
+    # Set a static IP name (previously reserved in GCP)
+    networking.gke.io/load-balancer-static-ip: "web-static-ip"
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: https
+    port: 443
+    targetPort: 8443
+---
+# Example 5: Azure-specific LoadBalancer
+# Uses annotations specific to Azure
+apiVersion: v1
+kind: Service
+metadata:
+  name: azure-web-service
+  annotations:
+    # Specify the resource group for the load balancer
+    service.beta.kubernetes.io/azure-load-balancer-resource-group: "myResourceGroup"
+    # Set TCP idle timeout (in minutes)
+    service.beta.kubernetes.io/azure-load-balancer-tcp-idle-timeout: "10"
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 6: Internal LoadBalancer (not exposed to the internet)
+# Uses annotations to make the load balancer only accessible within the VPC/cloud network
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-service
+  annotations:
+    # For AWS
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # For GCP (would use only one of these annotation sets in practice)
+    # cloud.google.com/load-balancer-type: "Internal"
+    # For Azure
+    # service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: internal-app
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 7: LoadBalancer with External Traffic Policy
+# Controls how external traffic is routed to pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: preserve-client-ip
+spec:
+  type: LoadBalancer
+  # Only routes to pods on the node that received the connection
+  # This preserves client source IPs but may cause uneven load distribution
+  externalTrafficPolicy: Local
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 8: LoadBalancer with Session Affinity
+# Routes traffic from the same client to the same pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: sticky-lb
+spec:
+  type: LoadBalancer
+  selector:
+    app: web-app
+  # Enable session affinity based on client IP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 9: LoadBalancer with Specific IP
+# Request a specific IP address for the load balancer (if supported by cloud provider)
+apiVersion: v1
+kind: Service
+metadata:
+  name: fixed-ip-lb
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 203.0.113.1  # Specify desired IP address
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 10: Dual-Stack LoadBalancer (IPv4 and IPv6)
+# Creates a load balancer that uses both IPv4 and IPv6
+apiVersion: v1
+kind: Service
+metadata:
+  name: dual-stack-lb
+spec:
+  type: LoadBalancer
+  ipFamilyPolicy: PreferDualStack  # Use both IPv4 and IPv6 if available
+  ipFamilies:
+  - IPv4
+  - IPv6
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# Example 11: Complete Application Example with Deployment
+# A full example with both Deployment and LoadBalancer Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-application
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        readinessProbe:  # Health check helps the load balancer know when pods are ready
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+# The LoadBalancer service for the web-application deployment
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-application
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:us-west-2:123456789012:certificate/abc123-xyz456"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+spec:
+  type: LoadBalancer
+  selector:
+    app: web  # Matches the Deployment's pod labels
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  - name: https
+    port: 443
+    targetPort: 80 

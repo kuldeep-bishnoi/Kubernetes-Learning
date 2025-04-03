@@ -1,0 +1,632 @@
+# This example demonstrates multi-cluster networking approaches
+# These patterns enable communication between services running in different Kubernetes clusters
+# Note: Most of these would be deployed using operators or cloud-specific tools
+
+---
+# 1. Cross-cluster service discovery and communication
+
+# For demonstration, we're showing configurations that would typically be 
+# deployed across multiple clusters. In a real setup, you would apply
+# different parts to different clusters.
+
+---
+# Cluster 1 namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multi-cluster-demo
+  labels:
+    purpose: multi-cluster-networking
+
+---
+# Cluster 2 namespace (would be in a different cluster)
+# Note: This is for illustration; you would create this in Cluster 2
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: multi-cluster-demo
+  labels:
+    purpose: multi-cluster-networking
+    # Adding cluster label to distinguish between clusters
+    cluster: cluster2  # This label is shown for clarity
+
+---
+# Method 1: Multi-cluster Ingress/Gateway
+# This approach exposes services via Ingress/Gateway and communicates across public Internet
+
+# Service in Cluster 1
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+  annotations:
+    multi-cluster/role: "source"
+spec:
+  selector:
+    app: service-a
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Ingress for Service A in Cluster 1
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: service-a-ingress
+  namespace: multi-cluster-demo
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: service-a.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: service-a
+            port:
+              number: 80
+
+---
+# Service in Cluster 2 that needs to access Service A in Cluster 1
+# This would be deployed in Cluster 2
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-b
+  namespace: multi-cluster-demo
+  annotations:
+    multi-cluster/role: "client"
+spec:
+  selector:
+    app: service-b
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Deployment in Cluster 2 that communicates with Service A in Cluster 1
+# This is deployed in Cluster 2
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-b
+  namespace: multi-cluster-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: service-b
+  template:
+    metadata:
+      labels:
+        app: service-b
+    spec:
+      containers:
+      - name: service-b
+        image: nginx:alpine
+        env:
+        # Service A is accessed via its public URL
+        - name: SERVICE_A_URL
+          value: "https://service-a.example.com"
+
+---
+# Method 2: Service Mesh Federation (Istio example)
+# This method uses a service mesh federation to connect services across clusters
+
+# In production, these would be created by Istio's installation
+# We're showing simplified versions for demonstration purposes
+
+# Service mesh gateway in Cluster 1
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: cluster1-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: MUTUAL
+      credentialName: cluster1-credential
+    hosts:
+    - "*.example.com"
+
+---
+# Service Entry in Cluster 2 (to discover services in Cluster 1)
+# This would be deployed in Cluster 2
+apiVersion: networking.istio.io/v1alpha3
+kind: ServiceEntry
+metadata:
+  name: service-a-entry
+  namespace: multi-cluster-demo
+spec:
+  hosts:
+  - service-a.multi-cluster-demo.svc.cluster1.global
+  location: MESH_INTERNAL
+  ports:
+  - number: 80
+    name: http
+    protocol: HTTP
+  resolution: DNS
+  addresses:
+  - 240.0.0.1  # Arbitrary VIP for this service
+  endpoints:
+  - address: cluster1-gateway.istio-system.svc.cluster.local
+    ports:
+      http: 443
+
+---
+# Method 3: Submariner for direct pod-to-pod communication (Cluster 1)
+# This example shows simplified Submariner configuration
+# In a real environment, Submariner components would be installed by the operator
+
+# This represents resources that would be in Cluster 1
+apiVersion: submariner.io/v1
+kind: ClusterGlobalEgressIP
+metadata:
+  name: cluster-egressip
+  namespace: submariner-operator
+spec:
+  numberOfIPs: 1  # Request an IP for the entire cluster
+
+---
+# Service Export from Cluster 1
+# This marks the service as available to other clusters
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ServiceExport
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+
+---
+# Service Import in Cluster 2
+# This represents a service from Cluster 1 imported into Cluster 2
+# This would be automatically created by Submariner
+apiVersion: multicluster.x-k8s.io/v1alpha1
+kind: ServiceImport
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+spec:
+  type: ClusterSetIP
+  ports:
+  - port: 80
+    protocol: TCP
+  ips:
+  - "10.10.20.30"  # This would be dynamically assigned
+
+---
+# Method 4: Google Multi-Cluster Services (MCS) example
+# This is a GKE-specific approach
+
+# Service Export for GKE MCS in Cluster 1
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'  # Enable Network Endpoint Group
+    networking.gke.io/multi-cluster-service: "true"  # Mark for multi-cluster
+spec:
+  selector:
+    app: service-a
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# In Cluster 2, you would access the service via a service entry or similar mechanism
+# Exact configuration depends on the cloud provider's implementation
+
+---
+# Method 5: KubeFed example
+# This example shows a simplified version of Kubernetes Federation v2
+
+# KubeFed Type Configuration (would be deployed by operator)
+apiVersion: types.kubefed.io/v1beta1
+kind: FederatedTypeConfig
+metadata:
+  name: services
+  namespace: kube-federation-system
+spec:
+  federatedType:
+    group: types.kubefed.io
+    kind: FederatedService
+    pluralName: federatedservices
+    scope: Namespaced
+    version: v1beta1
+  propagation: Enabled
+  targetType:
+    kind: Service
+    pluralName: services
+    scope: Namespaced
+    version: v1
+
+---
+# Federated Service Definition
+apiVersion: types.kubefed.io/v1beta1
+kind: FederatedService
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+spec:
+  template:  # Template for the target service
+    spec:
+      selector:
+        app: service-a
+      ports:
+      - port: 80
+        targetPort: 8080
+      type: ClusterIP
+  placement:
+    clusters:
+    - name: cluster1
+    - name: cluster2
+
+---
+# Method 6: Cilium Cluster Mesh example
+# Cilium provides native service discovery and networking between clusters
+
+# This shows a simplified Cilium cluster mesh configuration
+# In a real environment, this would be managed by the Cilium operator
+
+# Cilium Cluster in Cluster 1
+apiVersion: cilium.io/v2alpha1
+kind: CiliumCluster
+metadata:
+  name: cluster1
+spec:
+  id: 1
+  address: 10.168.0.1  # Cluster API server address
+
+---
+# Cilium Cluster in Cluster 2
+apiVersion: cilium.io/v2alpha1
+kind: CiliumCluster
+metadata:
+  name: cluster2
+spec:
+  id: 2
+  address: 10.168.0.2  # Cluster API server address
+
+---
+# Cilium ClusterMesh in Cluster 1
+apiVersion: cilium.io/v2alpha1
+kind: CiliumClusterMesh
+metadata:
+  name: clustermesh
+spec:
+  clusters:
+  - name: cluster1
+  - name: cluster2
+
+---
+# Service in Cluster 1 with global access annotation
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+  annotations:
+    service.cilium.io/global: "true"  # Mark service as globally accessible
+spec:
+  selector:
+    app: service-a
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Example application pod in Cluster 2 that will access a service in Cluster 1
+# The access happens transparently - no special client configuration needed
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: service-b
+  namespace: multi-cluster-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: service-b
+  template:
+    metadata:
+      labels:
+        app: service-b
+    spec:
+      containers:
+      - name: service-b
+        image: nginx:alpine
+        env:
+        # With Cilium Cluster Mesh, services are accessible with the same name across clusters
+        - name: SERVICE_A_URL
+          value: "http://service-a.multi-cluster-demo.svc.cluster.local"
+
+---
+# Method 7: AWS App Mesh multi-cluster example
+# This shows a simplified AWS App Mesh configuration for cross-cluster communication
+
+# App Mesh Virtual Node in Cluster 1
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+spec:
+  podSelector:
+    matchLabels:
+      app: service-a
+  listeners:
+  - portMapping:
+      port: 8080
+      protocol: http
+  serviceDiscovery:
+    dns:
+      hostname: service-a.multi-cluster-demo.svc.cluster.local
+
+---
+# App Mesh Virtual Service in Cluster 1
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualService
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+spec:
+  awsName: service-a.multi-cluster-demo.svc.cluster.local
+  provider:
+    virtualNode:
+      virtualNodeRef:
+        name: service-a
+
+---
+# App Mesh Virtual Node in Cluster 2 for external service
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualNode
+metadata:
+  name: service-a-remote
+  namespace: multi-cluster-demo
+spec:
+  listeners:
+  - portMapping:
+      port: 8080
+      protocol: http
+  serviceDiscovery:
+    dns:
+      hostname: service-a.multi-cluster-demo.svc.cluster1.local
+  backends:
+  - virtualService:
+      virtualServiceRef:
+        name: service-a
+
+---
+# App Mesh Virtual Service in Cluster 2
+apiVersion: appmesh.k8s.aws/v1beta2
+kind: VirtualService
+metadata:
+  name: service-a
+  namespace: multi-cluster-demo
+spec:
+  awsName: service-a.multi-cluster-demo.svc.cluster.local
+  provider:
+    virtualNode:
+      virtualNodeRef:
+        name: service-a-remote
+
+---
+# Method 8: Multi-cluster database replication
+# This shows an example of database replication across clusters
+
+# StatefulSet in Cluster 1 for primary database
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-primary
+  namespace: multi-cluster-demo
+spec:
+  serviceName: postgres-primary
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+      role: primary
+  template:
+    metadata:
+      labels:
+        app: postgres
+        role: primary
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: POSTGRES_DB
+          value: appdb
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Service for primary database in Cluster 1
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-primary
+  namespace: multi-cluster-demo
+spec:
+  selector:
+    app: postgres
+    role: primary
+  ports:
+  - port: 5432
+    targetPort: 5432
+  type: ClusterIP
+
+---
+# StatefulSet in Cluster 2 for replica database
+# This would be deployed in Cluster 2
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-replica
+  namespace: multi-cluster-demo
+spec:
+  serviceName: postgres-replica
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+      role: replica
+  template:
+    metadata:
+      labels:
+        app: postgres
+        role: replica
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        env:
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: POSTGRES_DB
+          value: appdb
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        # Configuration for replication
+        - name: PRIMARY_HOST
+          value: "postgres-primary.multi-cluster-demo.svc.cluster1.global"
+        ports:
+        - containerPort: 5432
+          name: postgres
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-config
+          mountPath: /docker-entrypoint-initdb.d
+      volumes:
+      - name: postgres-config
+        configMap:
+          name: postgres-replica-config
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# ConfigMap for replica database configuration in Cluster 2
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-replica-config
+  namespace: multi-cluster-demo
+data:
+  setup-replica.sh: |
+    #!/bin/bash
+    # Setup Postgres streaming replication
+    cat > /tmp/recovery.conf <<EOF
+    standby_mode = 'on'
+    primary_conninfo = 'host=${PRIMARY_HOST} port=5432 user=postgres password=${POSTGRES_PASSWORD}'
+    trigger_file = '/tmp/promote_to_primary'
+    EOF
+    cp /tmp/recovery.conf ${PGDATA}/recovery.conf
+    chmod 600 ${PGDATA}/recovery.conf
+
+---
+# Notes on multi-cluster networking approaches:
+#
+# 1. Public Ingress Method:
+#    - Pros: Simple, works with any Kubernetes cluster, minimal dependencies
+#    - Cons: Traffic goes over public internet, higher latency, requires SSL/TLS
+#
+# 2. Service Mesh Federation (Istio, Linkerd):
+#    - Pros: Secure mTLS communication, fine-grained traffic control, advanced observability
+#    - Cons: Complex setup, higher resource overhead, requires service mesh in all clusters
+#
+# 3. Submariner:
+#    - Pros: Direct pod-to-pod connectivity, transparent service discovery
+#    - Cons: More complex setup, requires specific CNI compatibility
+#
+# 4. Cloud Provider Solutions (GKE MCS, EKS, AKS):
+#    - Pros: Tightly integrated with cloud provider, easier setup
+#    - Cons: Vendor lock-in, works only on specific cloud provider
+#
+# 5. KubeFed:
+#    - Pros: Kubernetes-native approach, propagates resources across clusters
+#    - Cons: Still evolving, more complex setup
+#
+# 6. Cilium Cluster Mesh:
+#    - Pros: Native networking layer, high performance, simple service discovery
+#    - Cons: Requires Cilium as CNI in all clusters
+#
+# 7. AWS App Mesh:
+#    - Pros: Well integrated with AWS services, managed service
+#    - Cons: AWS-specific solution
+#
+# 8. Database Replication:
+#    - Pros: Data consistency across clusters, read locality
+#    - Cons: Complex setup, eventual consistency challenges
+
+---
+# Testing and debugging multi-cluster networking:
+#
+# 1. Verify connectivity between clusters:
+#    Exec into a pod in each cluster and try to reach services in the other cluster:
+#    kubectl exec -it -n multi-cluster-demo deploy/service-b -- curl service-a.multi-cluster-demo.svc.cluster.local
+#
+# 2. Check service discovery:
+#    kubectl get serviceimports -n multi-cluster-demo    # For Submariner
+#    kubectl -n multi-cluster-demo get endpoints         # For Kubernetes services
+#
+# 3. Test latency between clusters:
+#    kubectl exec -it -n multi-cluster-demo deploy/service-b -- ping service-a.multi-cluster-demo.svc.cluster.local
+#
+# 4. For service mesh solutions, check mesh status:
+#    istioctl x describe service service-a.multi-cluster-demo    # For Istio
+#
+# 5. Verify VPN/network tunnels:
+#    kubectl -n submariner-operator get gateways          # For Submariner
+#
+# Note: The configurations shown are simplified examples for educational purposes.
+# Production deployments would require additional security considerations, proper
+# secret management, and may use operators or helm charts for installation. 

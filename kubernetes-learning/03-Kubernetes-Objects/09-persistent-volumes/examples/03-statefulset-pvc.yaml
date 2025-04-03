@@ -1,0 +1,139 @@
+# This example demonstrates how StatefulSets can use volumeClaimTemplates
+# to automatically create PVCs for each StatefulSet replica
+
+---
+# First, create a headless service for the StatefulSet
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  labels:
+    app: mongodb
+spec:
+  ports:
+  - port: 27017
+    name: mongodb
+  clusterIP: None  # Headless service - no cluster IP
+  selector:
+    app: mongodb
+
+---
+# StorageClass for MongoDB data
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: mongodb-storage
+provisioner: kubernetes.io/gce-pd  # Change this to match your environment
+parameters:
+  type: pd-ssd  # SSD for better performance
+  fsType: ext4
+reclaimPolicy: Retain  # Important for databases - don't delete data
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
+---
+# StatefulSet for MongoDB with three replicas
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+spec:
+  serviceName: "mongodb"  # Must reference the headless service
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      terminationGracePeriodSeconds: 30  # Give time for clean shutdown
+      containers:
+      - name: mongodb
+        image: mongo:5.0
+        ports:
+        - containerPort: 27017
+          name: mongodb
+        env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: username
+              optional: true  # Allow running without secret for demo
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: password
+              optional: true  # Allow running without secret for demo
+        volumeMounts:
+        - name: mongodb-data
+          mountPath: /data/db  # MongoDB data directory
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        readinessProbe:  # Check if MongoDB is ready
+          exec:
+            command:
+            - mongo
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:  # Check if MongoDB is running
+          exec:
+            command:
+            - mongo
+            - --eval
+            - "db.adminCommand('ping')"
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+  # This is the key part - automatically creates PVCs for each replica
+  # Will create: mongodb-data-mongodb-0, mongodb-data-mongodb-1, mongodb-data-mongodb-2
+  volumeClaimTemplates:
+  - metadata:
+      name: mongodb-data
+      labels:
+        app: mongodb
+    spec:
+      accessModes: [ "ReadWriteOnce" ]  # Each pod gets its own volume
+      storageClassName: "mongodb-storage"  # Use the storage class defined above
+      resources:
+        requests:
+          storage: 10Gi  # Size of each volume
+
+---
+# Optional ConfigMap for MongoDB configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongodb-config
+data:
+  mongod.conf: |
+    storage:
+      dbPath: /data/db
+    net:
+      bindIp: 0.0.0.0
+    replication:
+      replSetName: rs0
+    security:
+      authorization: enabled
+
+---
+# Optional Secret for MongoDB credentials (in production, don't use plain passwords)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+type: Opaque
+stringData:  # Using stringData instead of data so we don't have to base64 encode
+  username: admin
+  password: password123  # Change in production! 

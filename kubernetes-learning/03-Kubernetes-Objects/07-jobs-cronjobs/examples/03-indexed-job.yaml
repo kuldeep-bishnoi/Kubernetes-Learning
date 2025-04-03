@@ -1,0 +1,65 @@
+# An indexed job for data sharding across multiple workers
+# This example demonstrates how to process data in chunks with index awareness
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: indexed-data-processor
+  labels:
+    app: data-processing
+    type: indexed
+spec:
+  # Total number of successful pod completions required
+  completions: 5
+  
+  # Number of pods to run concurrently
+  parallelism: 5
+  
+  # Use Indexed mode to assign a unique index to each pod
+  completionMode: Indexed
+  
+  # Retry failed pods up to 2 times
+  backoffLimit: 2
+  
+  # Time limit (10 minutes)
+  activeDeadlineSeconds: 600
+  
+  # Pod template
+  template:
+    metadata:
+      labels:
+        app: data-processing
+    spec:
+      containers:
+      - name: indexed-processor
+        image: busybox:latest
+        command: 
+        - "/bin/sh"
+        - "-c"
+        - |
+          # Access the JOB_COMPLETION_INDEX environment variable
+          echo "Processing data shard ${JOB_COMPLETION_INDEX} of 5"
+          
+          # Simulate processing a specific chunk of data based on index
+          echo "Starting work on chunk ${JOB_COMPLETION_INDEX}"
+          sleep $(( 2 + RANDOM % 5 ))
+          echo "Work completed on chunk ${JOB_COMPLETION_INDEX}"
+          
+          # Exit successfully
+          exit 0
+        resources:
+          requests:
+            cpu: 100m
+            memory: 50Mi
+          limits:
+            cpu: 200m
+            memory: 100Mi
+        # The JOB_COMPLETION_INDEX environment variable is automatically 
+        # injected by Kubernetes when using completionMode: Indexed
+        env:
+        - name: JOB_COMPLETION_INDEX
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['batch.kubernetes.io/job-completion-index']
+              
+      # Jobs must use Never or OnFailure for restartPolicy
+      restartPolicy: Never 

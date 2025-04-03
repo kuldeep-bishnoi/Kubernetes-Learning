@@ -1,0 +1,173 @@
+# StatefulSet Pod Management Policies Examples
+# This file demonstrates different pod management policies for StatefulSets
+
+# Example 1: OrderedReady Pod Management Policy (Default)
+# Pods are created and deleted one at a time in order
+apiVersion: v1
+kind: Service
+metadata:
+  name: ordered-app
+spec:
+  clusterIP: None
+  selector:
+    app: ordered-app
+  ports:
+  - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ordered-app
+spec:
+  serviceName: ordered-app
+  replicas: 3
+  # OrderedReady is the default - not specifying podManagementPolicy uses this mode
+  # podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: ordered-app
+  template:
+    metadata:
+      labels:
+        app: ordered-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 100Mi
+
+---
+# Example 2: Parallel Pod Management Policy
+# Pods are created and deleted in parallel for faster operations
+apiVersion: v1
+kind: Service
+metadata:
+  name: parallel-app
+spec:
+  clusterIP: None
+  selector:
+    app: parallel-app
+  ports:
+  - port: 80
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: parallel-app
+spec:
+  serviceName: parallel-app
+  replicas: 5
+  podManagementPolicy: Parallel     # Create/delete pods in parallel
+  selector:
+    matchLabels:
+      app: parallel-app
+  template:
+    metadata:
+      labels:
+        app: parallel-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 100Mi
+
+---
+# Example 3: Parallel with High Availability
+# Uses Parallel pod management with PodDisruptionBudget for availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ha-app-pdb
+spec:
+  minAvailable: 2                   # At least 2 pods must be available
+  selector:
+    matchLabels:
+      app: ha-app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ha-app-headless
+spec:
+  clusterIP: None
+  selector:
+    app: ha-app
+  ports:
+  - port: 80
+    name: web
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ha-app
+spec:
+  serviceName: ha-app-headless
+  replicas: 3
+  podManagementPolicy: Parallel     # Parallel for faster scaling
+  selector:
+    matchLabels:
+      app: ha-app
+  template:
+    metadata:
+      labels:
+        app: ha-app
+    spec:
+      affinity:
+        podAntiAffinity:            # Spread pods across nodes
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ha-app
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+          name: web
+        readinessProbe:             # Ensure pod is ready before serving traffic
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 1Gi 

@@ -1,0 +1,166 @@
+# This example demonstrates dynamic provisioning using StorageClasses
+# Multiple StorageClass types are shown, followed by PVCs that use them
+
+---
+# AWS EBS StorageClass for gp2 (General Purpose SSD) volumes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard-aws-ebs
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true" # Mark as default
+labels:
+  kubernetes.io/cluster-service: "true"
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp2  # General Purpose SSD
+  fsType: ext4  # Filesystem type
+reclaimPolicy: Delete  # PVs are deleted when PVCs are deleted
+volumeBindingMode: WaitForFirstConsumer  # Don't provision until pod needs it
+allowVolumeExpansion: true  # Allow volumes to be expanded after creation
+
+---
+# AWS EBS StorageClass for io1 (Provisioned IOPS SSD) volumes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-aws-ebs
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: io1  # Provisioned IOPS SSD
+  iopsPerGB: "50"  # IOPS per GB
+  fsType: ext4
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
+---
+# GCE PD StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard-gce
+provisioner: kubernetes.io/gce-pd
+parameters:
+  type: pd-standard  # Standard persistent disk
+  fsType: ext4
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# Azure Disk StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-standard
+provisioner: kubernetes.io/azure-disk
+parameters:
+  storageaccounttype: Standard_LRS  # Locally redundant storage
+  kind: Managed
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
+---
+# Local Storage StorageClass
+# Note: Local volumes cannot be dynamically provisioned currently
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner  # No dynamic provisioning
+volumeBindingMode: WaitForFirstConsumer  # Important for topology-aware scheduling
+reclaimPolicy: Delete
+
+---
+# CSI-based StorageClass for a hypothetical storage provider
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: example-csi-driver
+provisioner: example.csi.driver.io
+parameters:
+  type: thin-disk
+  availability: high
+  fsType: ext4
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+
+---
+# PVC using dynamic provisioning with AWS EBS
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dynamic-ebs-claim
+spec:
+  accessModes:
+    - ReadWriteOnce  # EBS volumes support RWO
+  storageClassName: standard-aws-ebs  # Reference the storage class
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# PVC using the "fast" storage class for high-performance workloads
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: high-performance-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-aws-ebs  # Reference the high-performance class
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# PVC with no storageClassName, will use the default class
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: default-class-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # No storageClassName means it will use the default class
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Deployment using the dynamic PVC
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:14
+        env:
+        - name: POSTGRES_PASSWORD
+          value: "password123"  # In production, use a Secret
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"  # Set path for data
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: dynamic-ebs-claim  # Reference the dynamically provisioned PVC 

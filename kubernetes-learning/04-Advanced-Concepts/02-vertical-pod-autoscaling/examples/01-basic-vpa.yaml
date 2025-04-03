@@ -1,0 +1,141 @@
+---
+# Basic Vertical Pod Autoscaler example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpa-demo
+---
+# Create a deployment with initially incorrect resource settings
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hamster
+  namespace: vpa-demo
+spec:
+  selector:
+    matchLabels:
+      app: hamster
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: hamster
+    spec:
+      containers:
+      - name: hamster
+        image: registry.k8s.io/ubuntu-slim:0.1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 50Mi
+          limits:
+            cpu: 100m
+            memory: 50Mi
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "while true; do timeout 0.5s yes >/dev/null; sleep 0.5s; done"
+---
+# Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: hamster
+  namespace: vpa-demo
+spec:
+  selector:
+    app: hamster
+  ports:
+  - port: 80
+    targetPort: 80
+---
+# Basic Vertical Pod Autoscaler in "Auto" mode
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hamster-vpa
+  namespace: vpa-demo
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind: Deployment
+    name: hamster
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: '*'
+        minAllowed:
+          cpu: 50m
+          memory: 25Mi
+        maxAllowed:
+          cpu: 500m
+          memory: 500Mi
+        controlledResources: ["cpu", "memory"]
+---
+# The same VPA configuration but in "Off" mode for observing recommendations only
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: hamster-vpa-off
+  namespace: vpa-demo-off
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind: Deployment
+    name: hamster
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: '*'
+        minAllowed:
+          cpu: 50m
+          memory: 25Mi
+        maxAllowed:
+          cpu: 500m
+          memory: 500Mi
+        controlledResources: ["cpu", "memory"]
+
+# Test and Usage Instructions:
+# 
+# Prerequisites:
+# 1. VPA components must be installed on your cluster:
+#    ```
+#    git clone https://github.com/kubernetes/autoscaler.git
+#    cd autoscaler/vertical-pod-autoscaler
+#    ./hack/vpa-up.sh
+#    ```
+#
+# Testing the VPA:
+# 1. Apply this manifest:
+#    ```
+#    kubectl apply -f 01-basic-vpa.yaml
+#    ```
+#
+# 2. Wait for the VPA to gather metrics (may take a few minutes)
+#
+# 3. Check VPA recommendations:
+#    ```
+#    kubectl describe vpa hamster-vpa -n vpa-demo
+#    ```
+#
+# 4. Watch for pod restarts as VPA adjusts resources:
+#    ```
+#    kubectl get pods -n vpa-demo -w
+#    ```
+#
+# 5. Observe the new resource settings:
+#    ```
+#    kubectl get pods -n vpa-demo -o jsonpath='{.items[0].spec.containers[0].resources}'
+#    ```
+#
+# 6. Check metrics being collected:
+#    ```
+#    kubectl get --raw "/apis/metrics.k8s.io/v1beta1/namespaces/vpa-demo/pods/"
+#    ```
+#
+# Notes:
+# - The "Off" mode VPA is useful for seeing what recommendations would be without applying them
+# - You might see the pod restart when using "Auto" mode as the VPA applies new settings
+# - VPA requires time to gather metrics before making recommendations 

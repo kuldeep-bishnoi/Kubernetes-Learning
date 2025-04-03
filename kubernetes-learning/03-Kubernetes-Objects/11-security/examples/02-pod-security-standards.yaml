@@ -1,0 +1,294 @@
+# This example demonstrates Pod Security Standards (PSS) in Kubernetes
+# PSS defines three different security profiles: Privileged, Baseline, and Restricted
+
+---
+# Create namespaces with different security enforcement levels
+# 1. Privileged namespace with no restrictions
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: privileged-namespace
+  labels:
+    # Enforce level labels (kubernetes.io/enforce-*)
+    # Privileged mode allows all pod security configurations
+    pod-security.kubernetes.io/enforce: privileged
+    # Audit and warn modes can be different from enforce mode
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+
+---
+# 2. Baseline namespace with moderate security
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: baseline-namespace
+  labels:
+    # Baseline prevents known privilege escalations
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+---
+# 3. Restricted namespace with high security
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: restricted-namespace
+  labels:
+    # Restricted enforces pod hardening best practices
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# 4. Mixed-mode namespace (enforce baseline, audit restricted)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mixed-security-namespace
+  labels:
+    # Enforce baseline, but audit against the restricted standard
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# Example 1: Pod that works in privileged namespace
+# This pod runs as root and uses hostPath volumes
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privileged-pod
+  namespace: privileged-namespace
+spec:
+  hostNetwork: true  # Use the host's network namespace
+  hostPID: true      # Use the host's PID namespace
+  hostIPC: true      # Use the host's IPC namespace
+  containers:
+  - name: privileged-container
+    image: nginx:latest
+    securityContext:
+      privileged: true  # Run as privileged container
+      runAsUser: 0      # Run as root
+    volumeMounts:
+    - name: host-vol
+      mountPath: /host-data
+  volumes:
+  - name: host-vol
+    hostPath:
+      path: /data      # Mount host filesystem
+
+---
+# Example 2: Pod that works in baseline namespace
+# This pod doesn't use privileged mode but still runs as root
+apiVersion: v1
+kind: Pod
+metadata:
+  name: baseline-pod
+  namespace: baseline-namespace
+spec:
+  containers:
+  - name: baseline-container
+    image: nginx:latest
+    securityContext:
+      runAsUser: 0       # Still runs as root
+      allowPrivilegeEscalation: false  # But disables privilege escalation
+    resources:
+      limits:
+        cpu: "1"
+        memory: "512Mi"
+      requests:
+        cpu: "0.5"
+        memory: "256Mi"
+
+---
+# Example 3: Pod that works in restricted namespace
+# This pod follows all security best practices
+apiVersion: v1
+kind: Pod
+metadata:
+  name: restricted-pod
+  namespace: restricted-namespace
+spec:
+  securityContext:
+    runAsNonRoot: true      # Doesn't run as root
+    seccompProfile:
+      type: RuntimeDefault   # Uses default runtime seccomp profile
+  containers:
+  - name: restricted-container
+    image: nginx:latest
+    securityContext:
+      allowPrivilegeEscalation: false  # Disable privilege escalation
+      capabilities:
+        drop: ["ALL"]    # Drop all capabilities
+      runAsUser: 1000    # Run as non-root user
+      runAsGroup: 1000   # Run with non-root group
+      readOnlyRootFilesystem: true  # Read-only root filesystem
+    resources:
+      limits:
+        cpu: "1"
+        memory: "512Mi"
+      requests:
+        cpu: "0.5"
+        memory: "256Mi"
+    volumeMounts:
+    - name: tmp-vol
+      mountPath: /tmp     # For writable temp directory
+  volumes:
+  - name: tmp-vol
+    emptyDir: {}         # Use emptyDir for writable storage
+
+---
+# Example 4: Pod that violates baseline standard
+# This would be rejected in baseline and restricted namespaces
+apiVersion: v1
+kind: Pod
+metadata:
+  name: violating-pod
+  namespace: privileged-namespace  # Only works in privileged namespace
+spec:
+  hostNetwork: true  # Violates baseline by using host network
+  containers:
+  - name: privileged-container
+    image: nginx:latest
+    securityContext:
+      privileged: true  # Violates baseline by using privileged mode
+      capabilities:
+        add: ["SYS_ADMIN"]  # Violates baseline by adding dangerous capabilities
+
+---
+# Example 5: Pod that violates restricted standard but passes baseline
+# This would work in baseline but not in restricted namespaces
+apiVersion: v1
+kind: Pod
+metadata:
+  name: violates-restricted-pod
+  namespace: baseline-namespace  # Works in baseline but not restricted
+spec:
+  containers:
+  - name: unrestricted-container
+    image: nginx:latest
+    securityContext:
+      runAsUser: 0       # Violates restricted by running as root
+      allowPrivilegeEscalation: false  # Required for baseline
+      capabilities:
+        drop: ["ALL"]    # Drops all capabilities
+        add: ["NET_ADMIN"] # But adds one back - violates restricted
+
+---
+# Example 6: Deployment with PSS-compliant pods for restricted namespace
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-deployment
+  namespace: restricted-namespace
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: secure-container
+        image: nginx:latest
+        ports:
+        - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          runAsUser: 1000
+          runAsGroup: 1000
+          readOnlyRootFilesystem: true
+        resources:
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+          requests:
+            cpu: "0.5"
+            memory: "256Mi"
+        volumeMounts:
+        - name: tmp-vol
+          mountPath: /tmp
+        - name: config-vol
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+      volumes:
+      - name: tmp-vol
+        emptyDir: {}
+      - name: config-vol
+        configMap:
+          name: nginx-config
+
+---
+# ConfigMap for the secure deployment
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: restricted-namespace
+data:
+  default.conf: |
+    server {
+        listen       8080;
+        server_name  localhost;
+        location / {
+            root   /usr/share/nginx/html;
+            index  index.html index.htm;
+        }
+    }
+
+---
+# Understanding Pod Security Standards:
+#
+# 1. Privileged (Minimal restrictions)
+#    - No restrictions on pod security
+#    - Suitable for system components, node daemons
+#    - Risky for regular application workloads
+#
+# 2. Baseline (Prevents known privilege escalations)
+#    - Prevents known privilege escalation vectors
+#    - Balances security and usability
+#    - Good for legacy applications that need some privileges
+#    - Key restrictions:
+#      - No privileged containers
+#      - No host namespaces
+#      - No hostPath volumes
+#      - No dangerous capabilities
+#
+# 3. Restricted (Heavily restricted, follows best practices)
+#    - Implements pod hardening best practices
+#    - Most secure option
+#    - May require application modifications to work
+#    - Key restrictions (in addition to baseline):
+#      - Must run as non-root
+#      - Must use runtime default seccomp profile
+#      - No adding capabilities
+#      - No host port usage
+#      - Strict volume types allowed
+#
+# Testing and Migration Tips:
+#
+# 1. Start with warning mode:
+#    Initially use 'warn' label without 'enforce' to audit pods
+#
+# 2. Gradually increase restrictions:
+#    Privileged → Baseline → Restricted
+#
+# 3. Test admission control:
+#    kubectl run nginx --image=nginx -n restricted-namespace
+#
+# 4. Check if a pod would be allowed:
+#    kubectl explain pod.spec.containers.securityContext
+#
+# 5. Debugging rejected pods:
+#    Check event logs with:
+#    kubectl get events -n <namespace> 

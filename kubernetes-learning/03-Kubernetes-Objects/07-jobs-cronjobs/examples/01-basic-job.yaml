@@ -1,0 +1,45 @@
+# A basic job that calculates Pi to 2000 digits using Perl
+# This shows a simple job that runs a task to completion
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pi-calculator
+  labels:
+    app: math
+    type: calculation
+spec:
+  # Number of successful completions required
+  completions: 1
+  
+  # Number of pods that can run in parallel
+  parallelism: 1
+  
+  # Retries before marking the job as failed
+  backoffLimit: 3
+  
+  # Time limit for job execution (5 minutes)
+  activeDeadlineSeconds: 300
+  
+  # Pod template
+  template:
+    metadata:
+      labels:
+        app: math
+    spec:
+      containers:
+      - name: pi
+        image: perl:5.34.0
+        command: ["perl", "-Mbignum=bpi", "-wle", "print bpi(2000)"]
+        resources:
+          requests:
+            cpu: 100m
+            memory: 50Mi
+          limits:
+            cpu: 500m
+            memory: 100Mi
+      
+      # Jobs must use OnFailure or Never, not Always
+      restartPolicy: Never
+      
+      # Terminate pod after 30 seconds
+      terminationGracePeriodSeconds: 30 

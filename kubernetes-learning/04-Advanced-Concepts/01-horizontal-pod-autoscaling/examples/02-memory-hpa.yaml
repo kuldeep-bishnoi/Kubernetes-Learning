@@ -1,0 +1,199 @@
+# Memory-based Horizontal Pod Autoscaler Example
+# This example demonstrates an HPA that scales based on memory utilization
+
+---
+# Create a namespace for our resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: memory-hpa-demo
+
+---
+# ConfigMap with a script that allocates memory
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memory-allocator-config
+  namespace: memory-hpa-demo
+data:
+  memory-allocator.py: |
+    #!/usr/bin/env python3
+    import time
+    import os
+    import sys
+    import random
+    from flask import Flask, request
+
+    app = Flask(__name__)
+
+    # Global list to hold memory
+    memory_hog = []
+
+    @app.route('/')
+    def home():
+        return "Memory Allocator API. Use /allocate?mb=100 to allocate memory."
+
+    @app.route('/allocate')
+    def allocate_memory():
+        """Allocate the requested amount of memory in MB"""
+        try:
+            mb = int(request.args.get('mb', '10'))
+            if mb < 1:
+                mb = 10
+            if mb > 500:  # Safety cap
+                mb = 500
+            
+            # Allocate memory by creating a large list with random numbers
+            # Each number takes 8 bytes, so 1MB = 1024*1024/8 = 131,072 numbers
+            numbers_to_allocate = int((mb * 1024 * 1024) / 8)
+            chunk = [random.random() for _ in range(numbers_to_allocate)]
+            memory_hog.append(chunk)
+            
+            hostname = os.uname()[1]
+            return f"Allocated {mb}MB of memory on host {hostname}. Total allocations: {len(memory_hog)}"
+        except Exception as e:
+            return f"Error allocating memory: {str(e)}"
+
+    @app.route('/free')
+    def free_memory():
+        """Free all allocated memory"""
+        global memory_hog
+        allocations = len(memory_hog)
+        memory_hog = []
+        return f"Freed all memory. {allocations} allocations released."
+
+    @app.route('/status')
+    def status():
+        """Show memory allocation status"""
+        total_mb = sum(sys.getsizeof(chunk) for chunk in memory_hog) / (1024 * 1024)
+        return f"Current memory allocations: {len(memory_hog)}, approximately {total_mb:.2f}MB"
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8080)
+
+---
+# Deployment running a Python Flask app that can allocate memory
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-allocator
+  namespace: memory-hpa-demo
+spec:
+  selector:
+    matchLabels:
+      app: memory-allocator
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: memory-allocator
+    spec:
+      containers:
+      - name: memory-allocator
+        image: python:3.9-slim
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install flask
+            mkdir -p /app
+            cp /scripts/memory-allocator.py /app/
+            cd /app
+            python memory-allocator.py
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            memory: "128Mi"  # Request 128 MiB of memory
+            cpu: "100m"
+          limits:
+            memory: "512Mi"  # Limit to 512 MiB of memory
+            cpu: "200m"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: memory-allocator-config
+          defaultMode: 0777
+
+---
+# Service to expose the memory allocator
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-allocator
+  namespace: memory-hpa-demo
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: memory-allocator
+  type: ClusterIP
+
+---
+# Horizontal Pod Autoscaler for memory-based scaling
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: memory-allocator
+  namespace: memory-hpa-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: memory-allocator
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 60  # Target 60% memory utilization
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60     # Wait 1 minute before scaling up
+      policies:
+      - type: Pods
+        value: 2                         # Add at most 2 pods at a time
+        periodSeconds: 60                # Every 1 minute
+    scaleDown:
+      stabilizationWindowSeconds: 300    # Wait 5 minutes before scaling down
+      policies:
+      - type: Percent
+        value: 50                        # Remove at most 50% of pods
+        periodSeconds: 60                # Every 1 minute
+
+---
+# Instructions for testing:
+#
+# 1. Apply this manifest to create the deployment and HPA:
+#    kubectl apply -f 02-memory-hpa.yaml
+#
+# 2. Watch the HPA status:
+#    kubectl -n memory-hpa-demo get hpa memory-allocator -w
+#
+# 3. Forward the service port to access the application:
+#    kubectl -n memory-hpa-demo port-forward svc/memory-allocator 8080:8080
+#
+# 4. Generate memory load by making requests to the application:
+#    curl "http://localhost:8080/allocate?mb=50"
+#    # Make multiple requests to increase memory usage
+#
+# 5. Check the memory usage:
+#    curl "http://localhost:8080/status"
+#
+# 6. Observe how the HPA scales the deployment:
+#    kubectl -n memory-hpa-demo get deployment memory-allocator
+#
+# 7. Check individual pod memory usage:
+#    kubectl -n memory-hpa-demo top pods
+#
+# 8. To free the allocated memory:
+#    curl "http://localhost:8080/free"
+#
+# 9. Watch the deployment scale back down after memory usage decreases:
+#    kubectl -n memory-hpa-demo get deployment memory-allocator -w 

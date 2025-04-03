@@ -1,0 +1,90 @@
+# Basic CronJob example for database backup
+# This demonstrates a scheduled job that runs daily
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: database-backup
+  labels:
+    app: db-maintenance
+    type: backup
+spec:
+  # Schedule: Run daily at 2:00 AM
+  schedule: "0 2 * * *"
+  
+  # Concurrency policy: Don't allow concurrent executions
+  # Options: Allow (default), Forbid, Replace
+  concurrencyPolicy: Forbid
+  
+  # Keep 3 successful jobs in history
+  successfulJobsHistoryLimit: 3
+  
+  # Keep 1 failed job in history
+  failedJobsHistoryLimit: 1
+  
+  # Must start within 2 minutes of scheduled time
+  startingDeadlineSeconds: 120
+  
+  # Job template
+  jobTemplate:
+    spec:
+      # Retry failed pods twice
+      backoffLimit: 2
+      
+      # Job time limit (10 minutes)
+      activeDeadlineSeconds: 600
+      
+      template:
+        metadata:
+          labels:
+            app: db-maintenance
+        spec:
+          containers:
+          - name: backup
+            image: postgres:14
+            command: 
+            - "/bin/sh"
+            - "-c"
+            - |
+              # Perform database backup
+              echo "Starting database backup at $(date)"
+              pg_dump -h $DB_HOST -U $DB_USER -d $DB_NAME > /backup/db-$(date +%Y-%m-%d).sql
+              
+              # Check if backup was successful
+              if [ $? -eq 0 ]; then
+                echo "Backup completed successfully at $(date)"
+                # Could add upload to external storage here
+              else
+                echo "Backup failed at $(date)"
+                exit 1
+              fi
+            resources:
+              requests:
+                cpu: 200m
+                memory: 200Mi
+              limits:
+                cpu: 500m
+                memory: 500Mi
+            env:
+            - name: DB_HOST
+              value: "postgres-service"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: username
+            - name: DB_NAME
+              value: "app_database"
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: password
+            volumeMounts:
+            - name: backup-volume
+              mountPath: /backup
+          volumes:
+          - name: backup-volume
+            persistentVolumeClaim:
+              claimName: backup-pvc
+          # Use OnFailure so failed backups are retried
+          restartPolicy: OnFailure 

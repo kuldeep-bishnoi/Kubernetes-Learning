@@ -1,0 +1,280 @@
+# This example demonstrates SecurityContext configurations in Kubernetes
+# SecurityContext defines privilege and access control settings for Pods and Containers
+
+---
+# Create a namespace for this example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-context-demo
+  labels:
+    purpose: security-example
+
+---
+# Example 1: Basic Pod-level security context
+# This applies security settings to all containers in the pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-level-security-context
+  namespace: security-context-demo
+spec:
+  # Pod-level security context applies to all containers
+  securityContext:
+    runAsUser: 1000     # Run all containers as user 1000
+    runAsGroup: 3000    # Run all containers with primary group 3000
+    fsGroup: 2000       # Set the ownership and permissions for mounted volumes
+  containers:
+  - name: secured-container
+    image: busybox:latest
+    command: ["sh", "-c", "sleep 3600"]
+    volumeMounts:
+    - name: volume-data
+      mountPath: /data/volume
+  volumes:
+  - name: volume-data
+    emptyDir: {}
+
+---
+# Example 2: Container-level security context
+# This overrides pod-level settings for specific containers
+apiVersion: v1
+kind: Pod
+metadata:
+  name: container-level-security-context
+  namespace: security-context-demo
+spec:
+  securityContext:
+    runAsUser: 1000     # Default user for all containers
+    runAsGroup: 3000    # Default group for all containers
+  containers:
+  - name: default-container
+    image: busybox:latest
+    command: ["sh", "-c", "sleep 3600"]
+  - name: custom-security-container
+    image: busybox:latest
+    command: ["sh", "-c", "sleep 3600"]
+    # Container-level security context overrides pod-level settings
+    securityContext:
+      runAsUser: 2000     # Override: Run as user 2000 
+      runAsGroup: 4000    # Override: Run with primary group 4000
+      allowPrivilegeEscalation: false  # Prevent privilege escalation
+
+---
+# Example 3: Advanced security settings
+# This demonstrates a pod with comprehensive security settings
+apiVersion: v1
+kind: Pod
+metadata:
+  name: advanced-security-context
+  namespace: security-context-demo
+spec:
+  securityContext:
+    runAsNonRoot: true    # Prevent running as root
+    seccompProfile:
+      type: RuntimeDefault  # Use runtime default seccomp profile
+    fsGroup: 5000         # Set fsGroup for volume access
+    supplementalGroups: [5555, 6666]  # Add supplemental groups
+  containers:
+  - name: secured-app
+    image: nginx:latest
+    securityContext:
+      runAsUser: 10000                 # Run as non-root user
+      runAsGroup: 30000                # Primary group
+      allowPrivilegeEscalation: false  # Prevent privilege escalation
+      readOnlyRootFilesystem: true     # Read-only root filesystem
+      privileged: false                # Not a privileged container
+      capabilities:
+        drop: ["ALL"]                  # Drop all capabilities
+        add: ["NET_BIND_SERVICE"]      # Add only specific capabilities
+      seccompProfile:
+        type: RuntimeDefault           # Use default seccomp profile
+    ports:
+    - containerPort: 8080
+    volumeMounts:
+    - name: temp-vol
+      mountPath: /tmp                  # Need writable directory
+    - name: config-vol
+      mountPath: /etc/nginx/conf.d
+      readOnly: true                   # Read-only volume
+  volumes:
+  - name: temp-vol
+    emptyDir: {}
+  - name: config-vol
+    configMap:
+      name: nginx-config
+
+---
+# ConfigMap for the nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: security-context-demo
+data:
+  default.conf: |
+    server {
+        listen       8080;
+        server_name  localhost;
+        location / {
+            root   /usr/share/nginx/html;
+            index  index.html index.htm;
+        }
+    }
+
+---
+# Example 4: Linux capabilities
+# This demonstrates how to use Linux capabilities
+apiVersion: v1
+kind: Pod
+metadata:
+  name: capabilities-demo
+  namespace: security-context-demo
+spec:
+  containers:
+  - name: capabilities-container
+    image: ubuntu:latest
+    command: ["sleep", "infinity"]
+    securityContext:
+      capabilities:
+        add: ["NET_ADMIN", "SYS_TIME"]  # Add specific capabilities
+        drop: ["SYS_ADMIN", "CHOWN"]     # Drop specific capabilities
+
+---
+# Example 5: SELinux context
+# This demonstrates SELinux settings in security context
+apiVersion: v1
+kind: Pod
+metadata:
+  name: selinux-demo
+  namespace: security-context-demo
+spec:
+  containers:
+  - name: selinux-container
+    image: busybox:latest
+    command: ["sleep", "infinity"]
+    securityContext:
+      seLinuxOptions:
+        level: "s0:c123,c456"  # SELinux level
+        # type: "container_t"   # SELinux type
+        # user: "system_u"      # SELinux user
+        # role: "object_r"      # SELinux role
+
+---
+# Example 6: Seccomp profiles
+# This demonstrates seccomp profile configuration
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-demo
+  namespace: security-context-demo
+spec:
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault  # Use runtime default seccomp profile
+      # type: Localhost    # Use locally installed profile
+      # localhostProfile: "profiles/audit.json"
+  containers:
+  - name: seccomp-container
+    image: busybox:latest
+    command: ["sleep", "infinity"]
+
+---
+# Example 7: AppArmor profiles
+# This demonstrates AppArmor profile configuration
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apparmor-demo
+  namespace: security-context-demo
+  annotations:
+    # Reference an AppArmor profile loaded on the node
+    container.apparmor.security.beta.kubernetes.io/apparmor-container: "runtime/default"
+spec:
+  containers:
+  - name: apparmor-container
+    image: busybox:latest
+    command: ["sleep", "infinity"]
+
+---
+# Example 8: Deployment with security context
+# This shows how to apply security context to a deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-deployment
+  namespace: security-context-demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: secure-app
+  template:
+    metadata:
+      labels:
+        app: secure-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: secure-app
+        image: nginx:latest
+        ports:
+        - containerPort: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tmp-vol
+          mountPath: /tmp
+      volumes:
+      - name: tmp-vol
+        emptyDir: {}
+
+---
+# Understanding SecurityContext Options:
+#
+# 1. User and Group Controls:
+#    - runAsUser/runAsGroup: Specify the UID/GID for running processes
+#    - runAsNonRoot: Ensures the container doesn't run as root
+#    - fsGroup: Controls ownership of volume files
+#    - supplementalGroups: Additional group memberships
+#
+# 2. Privilege Controls:
+#    - privileged: Run container with elevated privileges
+#    - allowPrivilegeEscalation: Control whether a process can gain more privileges than its parent
+#
+# 3. Linux Capabilities:
+#    - capabilities.add: Add specific Linux capabilities
+#    - capabilities.drop: Remove specific Linux capabilities
+#
+# 4. File System:
+#    - readOnlyRootFilesystem: Mount the container's root filesystem as read-only
+#
+# 5. Profile Controls:
+#    - seccompProfile: Control system calls using seccomp
+#    - seLinuxOptions: SELinux context for containers
+#    - AppArmor: (via annotations) Restrict container capabilities
+#
+# Testing and Verification:
+#
+# 1. Check user, group, and permissions:
+#    kubectl exec -it pod-level-security-context -n security-context-demo -- id
+#
+# 2. Test read/write access on mounted volumes:
+#    kubectl exec -it pod-level-security-context -n security-context-demo -- touch /data/volume/test-file
+#
+# 3. Verify container capabilities:
+#    kubectl exec -it capabilities-demo -n security-context-demo -- capsh --print
+#
+# 4. Check for privilege escalation prevention:
+#    kubectl exec -it advanced-security-context -n security-context-demo -- cat /proc/self/status | grep NoNewPrivs
+#
+# Note: Not all security context settings are available on all container runtimes.
+# Always check your specific runtime's capabilities and documentation. 

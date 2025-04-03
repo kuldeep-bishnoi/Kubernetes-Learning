@@ -1,0 +1,107 @@
+---
+# Basic Custom Resource Definition (CRD) Example
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: websites.example.com
+spec:
+  group: example.com
+  names:
+    kind: Website
+    listKind: WebsiteList
+    plural: websites
+    singular: website
+    shortNames:
+      - ws
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                domain:
+                  type: string
+                replicas:
+                  type: integer
+                  minimum: 1
+                  default: 1
+                image:
+                  type: string
+                  default: "nginx:latest"
+                gitRepository:
+                  type: string
+              required:
+                - domain
+---
+# Example Custom Resource (CR) - creates a website with a domain name
+apiVersion: example.com/v1
+kind: Website
+metadata:
+  name: example-website
+spec:
+  domain: example.com
+  replicas: 3
+  image: nginx:1.19.10
+  gitRepository: https://github.com/example/website-content.git
+
+# Test and Usage Instructions:
+# 
+# Installation:
+# 1. Apply the CRD definition to register the new resource type:
+#    ```
+#    kubectl apply -f 01-basic-crd.yaml
+#    ```
+#
+# 2. Verify the CRD is registered:
+#    ```
+#    kubectl get crd websites.example.com
+#    ```
+# 
+# 3. Create the example website resource:
+#    ```
+#    kubectl apply -f - <<EOF
+#    apiVersion: example.com/v1
+#    kind: Website
+#    metadata:
+#      name: example-website
+#    spec:
+#      domain: example.com
+#      replicas: 3
+#      image: nginx:1.19.10
+#      gitRepository: https://github.com/example/website-content.git
+#    EOF
+#    ```
+#
+# 4. List the websites:
+#    ```
+#    kubectl get websites
+#    # Or using the short name
+#    kubectl get ws
+#    ```
+#
+# 5. Get details about the website:
+#    ```
+#    kubectl describe website example-website
+#    ```
+#
+# Notes:
+# - This is a basic CRD with no controller implementation
+# - Without a controller, creating this resource won't actually deploy a website
+# - In a real implementation, a controller would watch for Website resources and create:
+#   - Deployments with the specified number of replicas
+#   - Services to expose the website
+#   - Ingress to handle the domain routing
+#   - Possibly GitOps components to pull from the repository
+#
+# Key Learning Points:
+# - CRDs allow you to define new resource types in Kubernetes
+# - The schema defines the structure and validation rules for your custom resources
+# - The "shortNames" field allows for shorter CLI commands
+# - Required fields ensure necessary data is provided
+# - Default values can be specified for optional fields 

@@ -1,0 +1,362 @@
+# VPA and HPA Integration Example
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpa-hpa-demo
+---
+# ConfigMap with a web application for demonstration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-config
+  namespace: vpa-hpa-demo
+data:
+  app.py: |
+    #!/usr/bin/env python3
+    from flask import Flask, jsonify, request
+    import time
+    import random
+    import json
+    import os
+    import threading
+    import requests
+    
+    app = Flask(__name__)
+    
+    # Simulated metrics store
+    custom_metrics = {
+        'queue_depth': 0,
+        'processed_messages': 0,
+        'total_requests': 0,
+        'active_connections': 0
+    }
+    
+    # Thread lock for metrics updates
+    lock = threading.Lock()
+    
+    @app.route('/')
+    def home():
+        with lock:
+            custom_metrics['total_requests'] += 1
+        return "VPA/HPA Integration Demo"
+    
+    @app.route('/metrics')
+    def metrics():
+        """Return Prometheus-style metrics"""
+        prometheus_metrics = []
+        
+        with lock:
+            for k, v in custom_metrics.items():
+                prometheus_metrics.append(f"app_{k} {v}")
+            
+            # Record active connections
+            active = custom_metrics['active_connections']
+            prometheus_metrics.append(f"app_active_connections {active}")
+        
+        return "\n".join(prometheus_metrics), 200, {'Content-Type': 'text/plain'}
+    
+    @app.route('/status')
+    def status():
+        """Get current metrics status"""
+        with lock:
+            return jsonify(custom_metrics)
+    
+    @app.route('/add_to_queue')
+    def add_to_queue():
+        """Add items to queue"""
+        count = int(request.args.get('count', 1))
+        with lock:
+            custom_metrics['queue_depth'] += count
+            return jsonify({
+                'success': True,
+                'queue_depth': custom_metrics['queue_depth'],
+                'added': count
+            })
+    
+    @app.route('/process_queue')
+    def process_queue():
+        """Process items from queue with CPU intensive operation"""
+        if custom_metrics['queue_depth'] <= 0:
+            return jsonify({
+                'success': False,
+                'error': 'Queue is empty'
+            })
+        
+        # Process a random number of items (up to 10) with CPU intensive work
+        to_process = min(int(request.args.get('count', random.randint(1, 10))), 
+                         custom_metrics['queue_depth'])
+        
+        # Simulate CPU-intensive processing
+        start_time = time.time()
+        for _ in range(to_process):
+            # CPU-intensive calculation
+            x = 0
+            for i in range(1000000):
+                x += random.random() ** 2
+        
+        with lock:
+            custom_metrics['queue_depth'] -= to_process
+            custom_metrics['processed_messages'] += to_process
+        
+        return jsonify({
+            'success': True,
+            'processed': to_process,
+            'remaining': custom_metrics['queue_depth'],
+            'processing_time': time.time() - start_time
+        })
+    
+    @app.route('/connections')
+    def manage_connections():
+        """Simulate active connections (for HPA to scale on)"""
+        action = request.args.get('action', 'status')
+        count = int(request.args.get('count', 1))
+        
+        with lock:
+            if action == 'add':
+                custom_metrics['active_connections'] += count
+            elif action == 'remove':
+                custom_metrics['active_connections'] = max(0, custom_metrics['active_connections'] - count)
+            
+            return jsonify({
+                'active_connections': custom_metrics['active_connections']
+            })
+    
+    @app.route('/simulate_workload')
+    def simulate_workload():
+        """Starts a background thread to simulate workload patterns"""
+        duration = int(request.args.get('duration', 900))  # Default 15 minutes
+        threading.Thread(target=workload_simulation, args=(duration,)).start()
+        return jsonify({
+            'success': True,
+            'message': f'Workload simulation started for {duration} seconds'
+        })
+    
+    def workload_simulation(duration):
+        """Simulates various workload patterns to trigger HPA/VPA"""
+        end_time = time.time() + duration
+        
+        while time.time() < end_time:
+            # Simulate variable connections
+            conn_pattern = random.choice(['spike', 'gradual', 'constant'])
+            
+            if conn_pattern == 'spike':
+                # Sudden spike in connections
+                requests.get(f'http://localhost:8080/connections?action=add&count={random.randint(50, 100)}')
+                time.sleep(30)
+                requests.get(f'http://localhost:8080/connections?action=remove&count={random.randint(40, 90)}')
+            
+            elif conn_pattern == 'gradual':
+                # Gradually increasing connections
+                for _ in range(10):
+                    requests.get(f'http://localhost:8080/connections?action=add&count={random.randint(5, 15)}')
+                    time.sleep(10)
+                time.sleep(60)
+                for _ in range(10):
+                    requests.get(f'http://localhost:8080/connections?action=remove&count={random.randint(5, 15)}')
+                    time.sleep(10)
+            
+            else:  # constant
+                # Maintain a relatively constant number of connections
+                requests.get(f'http://localhost:8080/connections?action=add&count={random.randint(20, 30)}')
+                time.sleep(120)
+                requests.get(f'http://localhost:8080/connections?action=remove&count={random.randint(20, 30)}')
+            
+            # Simulate queue processing (CPU intensive)
+            requests.get(f'http://localhost:8080/add_to_queue?count={random.randint(20, 50)}')
+            
+            for _ in range(5):
+                requests.get(f'http://localhost:8080/process_queue?count={random.randint(1, 10)}')
+                time.sleep(random.randint(5, 15))
+    
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8080)
+  requirements.txt: |
+    flask==2.0.1
+    requests==2.26.0
+---
+# Deployment with initial resources 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-vpa-hpa
+  namespace: vpa-hpa-demo
+spec:
+  selector:
+    matchLabels:
+      app: webapp-vpa-hpa
+  replicas: 1  # Initial replica count, will be scaled by HPA
+  template:
+    metadata:
+      labels:
+        app: webapp-vpa-hpa
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+      - name: webapp
+        image: python:3.9-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          pip install -r /app/requirements.txt
+          python /app/app.py
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 100m  # Initial CPU request
+            memory: 100Mi  # Initial memory request
+          limits:
+            cpu: 200m  # Initial CPU limit
+            memory: 200Mi  # Initial memory limit
+        volumeMounts:
+        - name: app-config
+          mountPath: /app
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: app-config
+        configMap:
+          name: webapp-config
+          defaultMode: 0777
+---
+# Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-vpa-hpa
+  namespace: vpa-hpa-demo
+spec:
+  selector:
+    app: webapp-vpa-hpa
+  ports:
+  - port: 80
+    targetPort: 8080
+    name: http
+---
+# VPA in "Initial" mode to optimize initial container resources
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: webapp-vpa
+  namespace: vpa-hpa-demo
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind: Deployment
+    name: webapp-vpa-hpa
+  updatePolicy:
+    updateMode: "Initial"  # Only applies to new pods, not existing ones
+  resourcePolicy:
+    containerPolicies:
+    - containerName: '*'
+      minAllowed:
+        cpu: 50m
+        memory: 50Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 500Mi
+      controlledResources: ["cpu", "memory"]
+---
+# HPA to scale based on number of connections (not CPU or memory)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: webapp-hpa
+  namespace: vpa-hpa-demo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: webapp-vpa-hpa
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: app_active_connections  # Custom metric exposed by our application
+      target:
+        type: AverageValue
+        averageValue: 10  # Scale out when average connections per pod > 10
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30  # React quickly to increased load
+      policies:
+      - type: Percent
+        value: 100  # Double the pods on scale up
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300  # Wait longer before scaling down
+      policies:
+      - type: Percent
+        value: 20  # Scale down by 20% at a time
+        periodSeconds: 60
+
+# Test and Usage Instructions:
+# 
+# Prerequisites:
+# 1. VPA components must be installed on your cluster
+# 2. For HPA with custom metrics:
+#    - Prometheus Operator should be installed
+#    - Prometheus Adapter configured for custom metrics
+#
+# Deployment:
+# 1. Apply this manifest:
+#    ```
+#    kubectl apply -f 04-vpa-hpa-integration.yaml
+#    ```
+#
+# 2. Set up port forwarding to access the service:
+#    ```
+#    kubectl port-forward svc/webapp-vpa-hpa 8080:80 -n vpa-hpa-demo
+#    ```
+#
+# 3. Generate traffic to trigger scaling:
+#    ```
+#    # Start automatic workload simulation for 15 minutes
+#    curl http://localhost:8080/simulate_workload
+#    
+#    # Or manually control workload:
+#    # Add active connections (triggers HPA)
+#    curl "http://localhost:8080/connections?action=add&count=50"
+#    
+#    # Generate CPU load (affects VPA recommendations)
+#    curl "http://localhost:8080/add_to_queue?count=100"
+#    curl "http://localhost:8080/process_queue?count=20"
+#    ```
+#
+# 4. Monitor scaling behavior:
+#    ```
+#    # Watch HPA status
+#    kubectl get hpa webapp-hpa -n vpa-hpa-demo -w
+#    
+#    # Check VPA recommendations
+#    kubectl describe vpa webapp-vpa -n vpa-hpa-demo
+#    
+#    # Watch pods being created/deleted
+#    kubectl get pods -n vpa-hpa-demo -w
+#    ```
+#
+# Key points about this integration:
+# 1. VPA is in "Initial" mode so it only affects new pods and doesn't conflict with HPA
+# 2. HPA scales based on custom metrics (connections) not CPU/memory to avoid conflicts
+# 3. New pods get optimal resource settings from VPA when they're created by HPA
+# 4. This approach enables both vertical and horizontal scaling simultaneously
+#
+# Notes:
+# - In production, you would use a real metrics backend instead of the simulated metrics
+# - This example requires a custom metrics adapter for Kubernetes to read the app_active_connections metric
+# - The "Initial" mode of VPA avoids conflicts with HPA by not evicting existing pods

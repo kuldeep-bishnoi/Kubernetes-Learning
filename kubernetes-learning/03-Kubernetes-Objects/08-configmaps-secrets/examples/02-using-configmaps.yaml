@@ -1,0 +1,211 @@
+# Examples of different ways to use ConfigMaps with Pods
+---
+# First, let's define a ConfigMap to use in the examples
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+data:
+  # Environment variables
+  APP_ENV: production
+  LOG_LEVEL: info
+  CACHE_TTL: "300"
+  DEBUG_MODE: "false"
+  
+  # Configuration file
+  nginx.conf: |
+    server {
+      listen 80;
+      server_name example.com;
+      
+      location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+      }
+      
+      location /api {
+        proxy_pass http://api-service:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+    
+  # Another configuration file
+  default.conf: |
+    server_tokens off;
+    client_max_body_size 10m;
+    keepalive_timeout 65;
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript;
+
+---
+# Example 1: Using ConfigMap entries as environment variables individually
+apiVersion: v1
+kind: Pod
+metadata:
+  name: env-var-pod
+  labels:
+    purpose: demonstrate-configmap-env-vars
+spec:
+  containers:
+  - name: web
+    image: nginx:1.21
+    # Define individual environment variables from ConfigMap
+    env:
+    - name: APP_ENV
+      valueFrom:
+        configMapKeyRef:
+          name: web-config
+          key: APP_ENV
+    - name: LOG_LEVEL
+      valueFrom:
+        configMapKeyRef:
+          name: web-config
+          key: LOG_LEVEL
+          # Optional: makes the reference optional instead of required
+          optional: true
+    # You can mix ConfigMap values with other values
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: STATIC_VAR
+      value: "some-fixed-value"
+  restartPolicy: Never
+
+---
+# Example 2: Using all ConfigMap entries as environment variables
+apiVersion: v1
+kind: Pod
+metadata:
+  name: envfrom-pod
+  labels:
+    purpose: demonstrate-configmap-envfrom
+spec:
+  containers:
+  - name: web
+    image: nginx:1.21
+    # Load all key-value pairs from ConfigMap as environment variables
+    envFrom:
+    - configMapRef:
+        name: web-config
+        # Optional: makes the reference optional instead of required
+        optional: true
+    # You can use multiple ConfigMaps
+    - configMapRef:
+        name: another-config
+        optional: true
+    # You can add a prefix to all environment variables from this ConfigMap
+    - configMapRef:
+        name: third-config
+        prefix: CONFIG_
+        optional: true
+  restartPolicy: Never
+
+---
+# Example 3: Using ConfigMap as a mounted volume
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-pod
+  labels:
+    purpose: demonstrate-configmap-volume
+spec:
+  containers:
+  - name: web
+    image: nginx:1.21
+    # Mount the ConfigMap as files
+    volumeMounts:
+    - name: nginx-config
+      mountPath: /etc/nginx/conf.d
+  volumes:
+  - name: nginx-config
+    configMap:
+      name: web-config
+      # Optionally select specific items to include
+      items:
+      - key: nginx.conf
+        path: nginx.conf
+      - key: default.conf
+        path: default.conf
+      # Set file permissions (optional)
+      defaultMode: 0444  # Read-only for all users
+
+---
+# Example 4: Using ConfigMap as a mounted volume with specific items and paths
+apiVersion: v1
+kind: Pod
+metadata:
+  name: subpath-pod
+  labels:
+    purpose: demonstrate-configmap-subpath
+spec:
+  containers:
+  - name: web
+    image: nginx:1.21
+    volumeMounts:
+    # Mount specific files to specific paths using subPath
+    - name: config-volume
+      mountPath: /etc/nginx/conf.d/default.conf
+      subPath: nginx.conf
+    - name: config-volume
+      mountPath: /etc/app/config.env
+      subPath: APP_ENV
+  volumes:
+  - name: config-volume
+    configMap:
+      name: web-config
+
+---
+# Example 5: Using ConfigMap in a Deployment with command-line arguments
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-deployment
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web-app
+        image: my-web-app:1.0
+        command: ["/bin/sh", "-c"]
+        # Use environment variables in command arguments
+        args: 
+        - |
+          echo "Starting application with environment: $APP_ENV"
+          echo "Debug mode: $DEBUG_MODE"
+          echo "Loading configuration from: /etc/config"
+          node /app/server.js --log-level=$LOG_LEVEL
+        env:
+        - name: APP_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: web-config
+              key: APP_ENV
+        - name: DEBUG_MODE
+          valueFrom:
+            configMapKeyRef:
+              name: web-config
+              key: DEBUG_MODE
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: web-config
+              key: LOG_LEVEL
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: web-config 

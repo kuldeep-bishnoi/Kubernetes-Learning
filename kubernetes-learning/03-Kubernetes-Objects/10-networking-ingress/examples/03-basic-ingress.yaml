@@ -1,0 +1,385 @@
+# This example demonstrates basic Ingress functionality for HTTP routing
+# Prerequisites: You must have an Ingress controller installed in your cluster
+
+---
+# Create a namespace for our ingress examples
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-demo
+  labels:
+    purpose: ingress-demo
+
+---
+# First Service - Main Web App
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: ingress-demo
+  labels:
+    app: web-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: web-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: web-content
+        configMap:
+          name: web-content
+
+---
+# ConfigMap for the web app content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-content
+  namespace: ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Main Web App</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f0f8ff; }
+        h1 { color: #0066cc; }
+      </style>
+    </head>
+    <body>
+      <h1>Main Web Application</h1>
+      <p>This is the main web application served from the root path.</p>
+    </body>
+    </html>
+
+---
+# Service for the web app
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-svc
+  namespace: ingress-demo
+spec:
+  selector:
+    app: web-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Second Service - API Backend
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-backend
+  namespace: ingress-demo
+  labels:
+    app: api-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api-backend
+  template:
+    metadata:
+      labels:
+        app: api-backend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: api-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: api-content
+        configMap:
+          name: api-content
+
+---
+# ConfigMap for the API content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-content
+  namespace: ingress-demo
+data:
+  index.html: |
+    {
+      "message": "Welcome to the API",
+      "version": "1.0",
+      "endpoints": ["/api/users", "/api/products"]
+    }
+
+---
+# Service for the API backend
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-backend-svc
+  namespace: ingress-demo
+spec:
+  selector:
+    app: api-backend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Third Service - Admin Dashboard
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin-dashboard
+  namespace: ingress-demo
+  labels:
+    app: admin-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admin-dashboard
+  template:
+    metadata:
+      labels:
+        app: admin-dashboard
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: admin-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: admin-content
+        configMap:
+          name: admin-content
+
+---
+# ConfigMap for the admin dashboard content
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-content
+  namespace: ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Admin Dashboard</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background-color: #ffe6e6; }
+        h1 { color: #cc0000; }
+      </style>
+    </head>
+    <body>
+      <h1>Admin Dashboard</h1>
+      <p>This is the admin dashboard for the application.</p>
+    </body>
+    </html>
+
+---
+# Service for the admin dashboard
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin-dashboard-svc
+  namespace: ingress-demo
+spec:
+  selector:
+    app: admin-dashboard
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Secret for TLS
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-tls
+  namespace: ingress-demo
+type: kubernetes.io/tls
+data:
+  # In a real scenario, you would generate proper certificates
+  # tls.crt and tls.key contain base64-encoded dummy certificates
+  # For production, replace with real certificates or use cert-manager
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURMakNDQWhZQ0NRREFPRjl0THNhWFdqQU5CZ2txaGtpRzl3MEJBUXNGQURCYU1Rc3dDUVlEVlFRR0V3SlYKVXpFTE1Ba0dBMVVFQ0F3Q1EwRXhJVEFmQmdOVkJBb01HRWx1ZEdWeWJtVjBJRmRwWkdkcGRITWdVSFI1SUV4MApaREViTUJrR0ExVUVBd3dTWTJGbVpTNWxlR0Z0Y0d4bExtTnZiU0FnTUI0WERURTRNRGt4TWpFMk1UVXpOVm9YCkRUSXpNRGt4TVRFMk1UVXpOVm93V0RFTE1Ba0dBMVVFQmhNQ1ZWTXhDekFKQmdOVkJBZ01Ba05CTVNFd0h3WUQKVlFRS0RCaEpiblJsY201bGRDQlhhV1JuYVhSeklGQjBlU0JNZEdReEdUQVhCZ05WQkFNTUVHTmhabVV1Wlhoa1lYQndMbU52YlRDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBTExnME5jCkVLQlBva2xOYTBrc1BBWGlPQ1pGNlJJdXhMdTJuUG1VSnZselFpQ1ZseDNEWG11R3VZUXl0TVpPUXhKTGZqWkgKWGxhZEJvKzRWbjVZdEczN1FXWGRhSEJmNGM1ZmdYRDhaTytIeUtiWElzT1VnWGJYNzNmOHIyWHVFTjI1UWQwTwpCWWZ0aHVjc2tkOUt1L1RYK1RnUmtBZU9QVEFIWnNYa0pKS21IS3JpaTl3WnRnK1JCM1hYdGNOZzhVeGRUeUlKCkVhNVp3N2RwcTI3VEJqQ2ZvRjRJVStEK1RmcHIvcHIrOXdLRkR6SENhYnA0cmFvdFVFWWppcTdLRTcyOXJYdmkKMFNHSnRSUExRYlhMbHZvMGl2Y2l1d0FpVUFaQWEzZGZtR1dIcGJEUUdjWm0waGp1V1NteTB2NHBKcnBxeUU1dApDV1BKQjIxcmJRSURBUUFCTUEwR0NTcUdTSWIzRFFFQkN3VUFBNElCQVFCWHNHUUlpQk9rcnU1RXkzNWlZTTVDCmh4N1RjaFVVSGdwZ3FEc1B6cVMyS2pEYlRJakhCYTFpYVhZVWQrM002U3VFT0dRcUZvUmVSZFJ3c2VaYks3UUgKWkFKb2RQVk1YYVowS3kwbDlTOU5xMEFXck5EdmxBMWJMVmZSMm5NMVVIMlJRMnE4Q0VGRDlCUUpzUmV5YlArSwpRR3F0SVpYTjZVYTFPVGUybVdJMUJwMWVVVDZLQWxKVjlsVEU1MU9HTlNhbTBzVUtNUE9tSzgxQjRPZ1FLaDRwCjFqMWV0dUtxZWs5KzB1RUZxL2ttdGJCbk9TUitJb1FJb0M4a0lOdy9BeEV1OFJBdEM2d2J5Wk9lY2x5aFVCUzYKcXVyQzQ4Rzh3ZzhTUlJIYzl5bElXSk95KzVzcUZXTW9kVDRXQnZGWmpPckxvWUh6WUhuZEQyVApLS0lsCkJaQzIKLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JSUV2Z0lCQURBTkJna3Foa2lHOXcwQkFRRUZBQVNDQktnd2dnU2tBZ0VBQW9JQkFRQ3k0TkRYQkNnVDZKSlQKV3RKTERRRjRqZ21SZWtTTHNTN3RwejVsQ2I1YzBJZ2xaY2R3MTV0aHJtRU1yVEdUa01TUzM0MlIxNVduUWFQdQpGWitXTFJ0KzBGbDNXaHdYK0hPWDRGdy9HVHZoOGltMXlMRGxJRjIxKzkzL0s5bDdoRGR1VUhkRGdXSDdZYm5MCkpIZlNydjAxL2s0RVpBSGpqMHdCMmJGNUNTU3BoeXE0b3ZjR2JZUGtRZDExN1hEWVBGTVhVOGlDUkd1V2NPM2EKYXRpMHdZd242QmVDRlBnL2szNmEvNmEvdmNDaFE4eHdtbTZlSzJxTFZCR0k0cXV5aE85dmExNzR0RWhpYlVUeQowRzF5NWI2TklyM0lyc0FJbEFHUUd0M1g1aGxoNld3MEJuR1p0SVk3bGtwc3RMK0tTYTZhc2hPYlFsanlRZHRhCjIwSURBUUFCQW9JQkFRQ3QrSEV2OWRRdzVjVDllN1JGcXZGUlBPSURrb01CZElYUGk5K3Evc2d3b3c1K2dRb3gKbHZJRFpuakUvK3JQV0xhbGVJUFhqL2RwbDVJUjA5WjVMY2JHMkQrVGJ1UmZkZXMrcG5aK3hqNzNyV0hHUHdhUQp0SjQ0OEJaMnRGZmpPeElvT1J6M0M3K3czaDZUL0F5ZWUyRWJJaDU0ZkhRU2NlUlRMdkdIQnZVZndLZU1PYzhPCkoxbFR5ZlhRTk9YY2xEYWRrZytIRHdXaWRZSkVnT0JMeEpvRGJnRjF1bEhwakRhWXgyNXdOZXNSQUtLZytPSHAKcHhxeXZnMnVsNzQ4eUJmSVE0UUZrcHZVemZSQS9LMEUvZ1p4TTBNYUpXYUhUNDNEcXI5Zko1VnVqeVhuVUlOSQpTV3N0cUY3dWp2SHdvL252a0RzSkEzNXo4RExNZ01xYUprK0JBb0dCQU5wUTUvbE1wYXJKdTNTSXBvU0pKZ0RECjdKYzhhUFoyYUFRNmM2UjlLVklDOTBPUGxreVlDRnN2Vm5aOWh4RVpTUjNENUNrYmpmT0F2WnVCNGJ2MXA1c28KcDRuTWs5K3R2YUNpRE1zZ3FLWUhlZkVPVjF1RDZOODNzSUdWTkh5KzNlbzVCNUZ6SjFvUkl5NkJCcStSOWt3RApPQmpnY05MRFpkSWlQT2FJb1F1UkFvR0JBTkxNUTVVY2RIR0xSbnNPei9qVnpWeWlUaXJZQUhIcE9JR0ZRR2VXCms2c2FBcmdDZG5pVVlRNEMvYzZKdWQ0eTBNUmZWbWE3cmE3cDVTQVozTnRjUzNmR1JYR3oyN1Ixd3lUREd6QWYKbVNpWVFReHg4T2FKUktQQk9IRHJIeFJvbzlwWjRib1dIUlB5S2puaGdSd2JYZVZoUEJ0U2FmZzVobkRncW50VwpaSllGQW9HQkFLOG9MVGJzRVg1WU14MXJtL0xrWElhbjJDWHZoL1lRK1UrdWNqM2NMWElvZTBTSFA1Q2pJOXo3ClNUaVE1R1JIR3hLOE1XSDBpNllUbFdYY2hPT1R3YlZ4S2pESUt5bm9kVTJ2ZWFmZFpkS1ZZdkpjZmRPOFFvNnMKRXBKbWZCVG9lNlJ3dFIrU2tLYzZPMHpxeElveGo3UnA4TitMVVVrajhXTlRkc3dVVHBDQkFvR0JBSmVVdnVNdgpGQS9RTWZ6TmxIQkJOOGJiK3ZrcDlUN3I2TkNlWUlEZ0x2TGZaL0pqZis2QmZCNDhFSFZsMDltMUVkYVNHK3paClEwZCtZNEZtV0JLendTMjJiOWNkNG91RnFxQ2wrMjlKczJMZDhBNWgrMEpUSUZ0TmppVUJPV1BUVWx3Qi9yKzkKaG44VE5OSUtZRnpRSENiSWZoUTdGR2dMR0E3UDN2ZGZLVUpzQW9HQkFKSzFXbTJzYTJJZnJVWExJbzJxY0E0cgpDOUp2QWFXZXRqSEdmWkhkQ290WGsyaW9LakRRdXRWbEQxUTdQU0dFQkdSbmVNdFFxUGE4a3RXSUY3STdXVmJHClJNbzZ1bWhDc2FPcVhGK3FVaG9qWEJ5Rk5NYWlUdGlIZ3F0MXRXL2JpQW90czlsYk9iODBuUEZCaFJRZk9HY3YKZlNzZzZBZ0ZneWUvZ083dGZWNzAKLS0tLS1FTkQgUFJJVkFURSBLRVktLS0tLQo=
+
+---
+# Basic Ingress Definition
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: basic-ingress
+  namespace: ingress-demo
+  annotations:
+    # Common Ingress controller annotations
+    # For NGINX Ingress Controller
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # For monitoring
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "10254"
+spec:
+  # Define the IngressClass to use
+  ingressClassName: nginx
+  # TLS Configuration
+  tls:
+  - hosts:
+    - app.example.com
+    - admin.example.com
+    secretName: example-tls
+  # Routing Rules
+  rules:
+  # Rule 1: Main application at app.example.com
+  - host: app.example.com
+    http:
+      paths:
+      # Root path goes to the main web app
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-app-svc
+            port:
+              number: 80
+      # /api path goes to the API backend
+      - path: /api(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: api-backend-svc
+            port:
+              number: 80
+  
+  # Rule 2: Admin dashboard at admin.example.com
+  - host: admin.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: admin-dashboard-svc
+            port:
+              number: 80
+
+---
+# Default Backend Service for 404 errors
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-backend
+  namespace: ingress-demo
+  labels:
+    app: default-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: default-backend
+  template:
+    metadata:
+      labels:
+        app: default-backend
+    spec:
+      containers:
+      - name: default-backend
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: error-pages
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: error-pages
+        configMap:
+          name: error-pages
+
+---
+# ConfigMap for error pages
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: error-pages
+  namespace: ingress-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Page Not Found</title>
+      <style>
+        body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
+        h1 { color: #555; }
+        .container { max-width: 600px; margin: 0 auto; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>404 - Page Not Found</h1>
+        <p>The page you are looking for might have been removed, had its name changed,
+           or is temporarily unavailable.</p>
+        <p><a href="/">Go to Homepage</a></p>
+      </div>
+    </body>
+    </html>
+
+---
+# Service for default backend
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-backend-svc
+  namespace: ingress-demo
+spec:
+  selector:
+    app: default-backend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+
+---
+# Instructions for testing:
+#
+# 1. Add entries to your /etc/hosts file for local testing:
+#    127.0.0.1 app.example.com admin.example.com
+#
+# 2. For cloud environments, set up DNS records pointing to your Ingress controller's 
+#    external IP or load balancer.
+#
+# 3. Get the Ingress address:
+#    kubectl get ingress -n ingress-demo
+#
+# 4. Test endpoints:
+#    curl -k https://app.example.com
+#    curl -k https://app.example.com/api
+#    curl -k https://admin.example.com
+#
+# 5. Check Ingress status and events:
+#    kubectl describe ingress basic-ingress -n ingress-demo

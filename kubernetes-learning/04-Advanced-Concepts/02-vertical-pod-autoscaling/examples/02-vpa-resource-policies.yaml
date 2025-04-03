@@ -1,0 +1,268 @@
+---
+# Vertical Pod Autoscaler with detailed resource policies
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vpa-policies-demo
+---
+# ConfigMap with a script that consumes variable resources
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workload-script
+  namespace: vpa-policies-demo
+data:
+  workload.sh: |
+    #!/bin/bash
+    # This script creates an alternating workload pattern
+    # It will use high CPU for some time, then low CPU
+    # And allocate different memory amounts at intervals
+    
+    memory_array=()
+    
+    # Function to consume CPU
+    consume_cpu() {
+      local duration=$1
+      local intensity=$2
+      echo "Consuming CPU at intensity $intensity for $duration seconds"
+      timeout ${duration}s bash -c "while true; do echo 'CPU load test'; done" >/dev/null 2>&1
+    }
+    
+    # Function to allocate memory
+    allocate_memory() {
+      local size_mb=$1
+      echo "Allocating ${size_mb}MB of memory"
+      memory_array+=($(dd if=/dev/zero bs=1M count=${size_mb} 2>/dev/null))
+    }
+    
+    # Function to free memory
+    free_memory() {
+      echo "Freeing memory"
+      memory_array=()
+    }
+    
+    # Main loop that creates different workload patterns
+    while true; do
+      # High CPU usage phase
+      consume_cpu 30 0.8
+      
+      # Allocate some memory
+      allocate_memory 50
+      
+      # Medium CPU usage phase
+      consume_cpu 45 0.5
+      
+      # Allocate more memory
+      allocate_memory 100
+      
+      # Low CPU usage phase
+      consume_cpu 60 0.2
+      
+      # Free some memory
+      free_memory
+      
+      echo "Sleeping for 30 seconds before next cycle"
+      sleep 30
+    done
+---
+# Deployment with multi-container app with different resource profiles
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-container-app
+  namespace: vpa-policies-demo
+spec:
+  selector:
+    matchLabels:
+      app: multi-container-app
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: multi-container-app
+    spec:
+      containers:
+      # Main application container
+      - name: app-container
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+          limits:
+            cpu: 200m
+            memory: 200Mi
+        # Mount a ConfigMap for serving custom content
+        volumeMounts:
+        - name: nginx-conf
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+      
+      # Worker container with varying resource usage
+      - name: worker-container
+        image: ubuntu:20.04
+        command: ["/bin/bash"]
+        args: ["-c", "chmod +x /scripts/workload.sh && /scripts/workload.sh"]
+        resources:
+          requests:
+            cpu: 50m
+            memory: 50Mi
+          limits:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: workload-script
+          mountPath: /scripts
+      
+      # Sidecar container
+      - name: sidecar-container
+        image: busybox:1.33
+        command: ["/bin/sh"]
+        args:
+        - "-c"
+        - "while true; do echo 'Sidecar running'; sleep 30; done"
+        resources:
+          requests:
+            cpu: 10m
+            memory: 10Mi
+          limits:
+            cpu: 20m
+            memory: 20Mi
+      
+      volumes:
+      - name: workload-script
+        configMap:
+          name: workload-script
+          defaultMode: 0777
+      - name: nginx-conf
+        configMap:
+          name: nginx-config
+---
+# ConfigMap for nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: vpa-policies-demo
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+        location / {
+            root /usr/share/nginx/html;
+            index index.html index.htm;
+        }
+        location /status {
+            stub_status on;
+            access_log off;
+        }
+    }
+---
+# Service to expose the application
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-container-app
+  namespace: vpa-policies-demo
+spec:
+  selector:
+    app: multi-container-app
+  ports:
+  - port: 80
+    targetPort: 80
+---
+# VPA with container-specific resource policies
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: multi-container-vpa
+  namespace: vpa-policies-demo
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind: Deployment
+    name: multi-container-app
+  updatePolicy:
+    updateMode: "Auto"  # Auto, Off, or Initial
+  resourcePolicy:
+    containerPolicies:
+    # Policy for the main application container
+    - containerName: app-container
+      mode: "Auto"
+      minAllowed:
+        cpu: 50m
+        memory: 50Mi
+      maxAllowed:
+        cpu: 500m
+        memory: 500Mi
+      controlledResources: ["cpu", "memory"]
+    
+    # Policy for the worker container that needs more resources
+    - containerName: worker-container
+      mode: "Auto"
+      minAllowed:
+        cpu: 50m
+        memory: 50Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 1Gi
+      controlledValues: "RequestsAndLimits"  # Controls both requests and limits
+    
+    # Policy for the sidecar container with minimal resources
+    - containerName: sidecar-container
+      mode: "Auto"
+      minAllowed:
+        cpu: 5m
+        memory: 5Mi
+      maxAllowed:
+        cpu: 50m
+        memory: 50Mi
+      controlledResources: ["cpu", "memory"]
+      
+    # Default policy for any container not explicitly specified
+    - containerName: '*'
+      mode: "Auto"
+      minAllowed:
+        cpu: 10m
+        memory: 10Mi
+      maxAllowed:
+        cpu: 100m
+        memory: 100Mi
+
+# Test and Usage Instructions:
+# 
+# Prerequisites:
+# 1. VPA components must be installed on your cluster
+#
+# Testing:
+# 1. Apply this manifest:
+#    ```
+#    kubectl apply -f 02-vpa-resource-policies.yaml
+#    ```
+#
+# 2. Wait for the VPA to gather metrics (5-10 minutes for meaningful recommendations)
+#
+# 3. Check VPA recommendations for each container:
+#    ```
+#    kubectl describe vpa multi-container-vpa -n vpa-policies-demo
+#    ```
+#
+# 4. Watch for pod restarts as VPA adjusts resources:
+#    ```
+#    kubectl get pods -n vpa-policies-demo -w
+#    ```
+#
+# 5. Observe how different containers get different resource settings:
+#    ```
+#    kubectl get pod $(kubectl get pods -n vpa-policies-demo -o name | head -1) \
+#      -n vpa-policies-demo -o jsonpath='{.spec.containers[*].resources}' | jq
+#    ```
+#
+# Notes:
+# - Each container has its own policy with different min/max resources
+# - The worker container allows for more growth than others
+# - The sidecar is kept deliberately small
+# - VPA needs time to gather usage data - more accurate recommendations come after longer runtime 

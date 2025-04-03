@@ -1,0 +1,130 @@
+# Canary Deployment Pattern
+# This file demonstrates a canary deployment approach in Kubernetes
+
+# Service (routes to both stable and canary deployments)
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  selector:
+    app: frontend      # Matches both stable and canary deployments
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+
+---
+# Stable Deployment (Current Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-stable
+  labels:
+    app: frontend
+    version: stable
+spec:
+  replicas: 9         # 90% of traffic (9 pods)
+  selector:
+    matchLabels:
+      app: frontend
+      version: stable
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: stable
+    spec:
+      containers:
+      - name: frontend
+        image: my-app:1.0
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# Canary Deployment (New Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-canary
+  labels:
+    app: frontend
+    version: canary
+spec:
+  replicas: 1         # 10% of traffic (1 pod compared to 9 stable pods)
+  selector:
+    matchLabels:
+      app: frontend
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: canary
+    spec:
+      containers:
+      - name: frontend
+        image: my-app:1.1      # New version of the application
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+
+# Canary Deployment Process:
+# 1. Start with a small canary deployment (e.g., 1 pod) alongside the stable deployment
+# 2. The service routes to both, sending a small percentage of traffic to the canary
+# 3. Monitor the canary deployment's performance and error rates
+# 4. If the canary is stable, gradually increase the number of canary pods:
+#    kubectl scale deployment frontend-canary --replicas=3
+# 5. Continue until you're confident, then gradually scale down the stable deployment:
+#    kubectl scale deployment frontend-stable --replicas=5
+# 6. Eventually replace the stable deployment completely:
+#    kubectl scale deployment frontend-canary --replicas=10
+#    kubectl scale deployment frontend-stable --replicas=0
+# 7. When fully transitioned, rename or replace deployments for clarity
+
+---
+# Alternative Approach: Using Istio or a similar service mesh for traffic splitting
+# With a service mesh, you can control the traffic split percentage directly:
+
+# apiVersion: networking.istio.io/v1alpha3
+# kind: VirtualService
+# metadata:
+#   name: frontend
+# spec:
+#   hosts:
+#   - frontend
+#   http:
+#   - route:
+#     - destination:
+#         host: frontend-stable
+#       weight: 90
+#     - destination:
+#         host: frontend-canary
+#       weight: 10 

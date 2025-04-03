@@ -1,0 +1,162 @@
+# Multi-Container Deployment with Sidecars
+# This file demonstrates a deployment with multiple containers in a single pod
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  labels:
+    app: web-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      # Main application and sidecar containers share:
+      # - Network namespace (can communicate via localhost)
+      # - Storage volumes
+      # - Same lifecycle (created and destroyed together)
+      containers:
+      # Main application container
+      - name: web-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: shared-data
+          mountPath: /usr/share/nginx/html
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 200m
+            memory: 128Mi
+        # Redirect logs to stdout for collection
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # Update nginx config to log to stdout/stderr
+            sed -i 's/access_log.*/access_log \/dev\/stdout;/' /etc/nginx/nginx.conf
+            sed -i 's/error_log.*/error_log \/dev\/stderr;/' /etc/nginx/nginx.conf
+            # Start nginx
+            nginx -g 'daemon off;'
+      
+      # Sidecar container 1: Content Generator
+      - name: content-generator
+        image: busybox:1.28
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            while true; do
+              echo "<h1>Generated content at $(date)</h1>" > /content/index.html
+              echo "<p>Pod: $HOSTNAME</p>" >> /content/index.html
+              sleep 10
+            done
+        volumeMounts:
+        - name: shared-data
+          mountPath: /content
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
+      
+      # Sidecar container 2: Monitoring/Metrics
+      - name: prometheus-exporter
+        image: nginx/nginx-prometheus-exporter:0.9.0
+        args:
+          - -nginx.scrape-uri=http://localhost/metrics
+        ports:
+        - containerPort: 9113
+          name: metrics
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9113
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      
+      # Sidecar container 3: Log Processor
+      - name: log-processor
+        image: busybox:1.28
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # Create a fifo for logs
+            touch /logs/processed.log
+            # Process logs, add timestamp, etc.
+            tail -f /logs/processed.log &
+            while true; do
+              sleep 30
+            done
+        volumeMounts:
+        - name: log-data
+          mountPath: /logs
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
+      
+      # Init container - runs before other containers start
+      initContainers:
+      - name: init-content
+        image: busybox:1.28
+        command: ['sh', '-c', 'echo "<h1>Initial content</h1>" > /content/index.html']
+        volumeMounts:
+        - name: shared-data
+          mountPath: /content
+      
+      volumes:
+      - name: shared-data
+        emptyDir: {}   # Ephemeral volume shared between containers in the pod
+      - name: log-data
+        emptyDir: {}   # Ephemeral volume for logs
+
+---
+# Service to expose the web application
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app
+spec:
+  selector:
+    app: web-app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+
+---
+# Service to expose metrics endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-app-metrics
+  labels:
+    app: web-app
+    service: metrics
+spec:
+  selector:
+    app: web-app
+  ports:
+  - name: metrics
+    port: 9113
+    targetPort: metrics 
